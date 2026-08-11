@@ -1,0 +1,219 @@
+--// Simple Roblox GUI
+--// Put this in StarterPlayer > StarterPlayerScripts as a LocalScript
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+
+local player = Players.LocalPlayer
+
+-- Wait for character to load
+local function getCharacter()
+    local character = player.Character or player.CharacterAdded:Wait()
+    local humanoid = character:WaitForChild("Humanoid")
+    local root = character:WaitForChild("HumanoidRootPart")
+    return character, humanoid, root
+end
+
+local character, humanoid, root = getCharacter()
+
+player.CharacterAdded:Connect(function(char)
+    character = char
+    humanoid = char:WaitForChild("Humanoid")
+    root = char:WaitForChild("HumanoidRootPart")
+end)
+
+--// GUI
+local gui = Instance.new("ScreenGui")
+gui.Name = "LuaControlGUI"
+gui.ResetOnSpawn = false
+gui.Parent = player:WaitForChild("PlayerGui")
+
+local frame = Instance.new("Frame")
+frame.Size = UDim2.fromOffset(220, 230)
+frame.Position = UDim2.new(0, 20, 0.5, -115)
+frame.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
+frame.BorderSizePixel = 0
+frame.Parent = gui
+
+local corner = Instance.new("UICorner")
+corner.CornerRadius = UDim.new(0, 10)
+corner.Parent = frame
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, 0, 0, 40)
+title.BackgroundTransparency = 1
+title.Text = "Lua Control"
+title.TextColor3 = Color3.new(1, 1, 1)
+title.TextSize = 20
+title.Font = Enum.Font.GothamBold
+title.Parent = frame
+
+local function makeButton(text, y)
+    local button = Instance.new("TextButton")
+    button.Size = UDim2.new(1, -20, 0, 40)
+    button.Position = UDim2.fromOffset(10, y)
+    button.BackgroundColor3 = Color3.fromRGB(45, 45, 55)
+    button.TextColor3 = Color3.new(1, 1, 1)
+    button.TextSize = 15
+    button.Font = Enum.Font.Gotham
+    button.Text = text
+    button.Parent = frame
+
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, 7)
+    c.Parent = button
+
+    return button
+end
+
+local executeButton = makeButton("Execute / Load", 45)
+local flyButton = makeButton("Fly: OFF", 90)
+local noclipButton = makeButton("Noclip: OFF", 135)
+local antiResetButton = makeButton("Anti-Reset: OFF", 180)
+
+--// States
+local flying = false
+local noclip = false
+local antiReset = false
+
+--// Fly
+local flyConnection
+
+local function stopFly()
+    flying = false
+
+    if flyConnection then
+        flyConnection:Disconnect()
+        flyConnection = nil
+    end
+
+    if root then
+        root.AssemblyLinearVelocity = Vector3.zero
+    end
+end
+
+local function startFly()
+    flying = true
+
+    flyConnection = RunService.RenderStepped:Connect(function()
+        if not flying or not character or not humanoid or not root then
+            return
+        end
+
+        local camera = workspace.CurrentCamera
+        local direction = Vector3.zero
+
+        if UserInputService:IsKeyDown(Enum.KeyCode.W) then
+            direction += camera.CFrame.LookVector
+        end
+        if UserInputService:IsKeyDown(Enum.KeyCode.S) then
+            direction -= camera.CFrame.LookVector
+        end
+        if UserInputService:IsKeyDown(Enum.KeyCode.A) then
+            direction -= camera.CFrame.RightVector
+        end
+        if UserInputService:IsKeyDown(Enum.KeyCode.D) then
+            direction += camera.CFrame.RightVector
+        end
+        if UserInputService:IsKeyDown(Enum.KeyCode.Space) then
+            direction += Vector3.yAxis
+        end
+        if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then
+            direction -= Vector3.yAxis
+        end
+
+        if direction.Magnitude > 0 then
+            direction = direction.Unit
+        end
+
+        root.AssemblyLinearVelocity = direction * 60
+    end)
+end
+
+flyButton.MouseButton1Click:Connect(function()
+    if flying then
+        stopFly()
+        flyButton.Text = "Fly: OFF"
+        flyButton.BackgroundColor3 = Color3.fromRGB(45, 45, 55)
+    else
+        startFly()
+        flyButton.Text = "Fly: ON"
+        flyButton.BackgroundColor3 = Color3.fromRGB(40, 150, 80)
+    end
+end)
+
+--// Noclip
+local noclipConnection
+
+noclipButton.MouseButton1Click:Connect(function()
+    noclip = not noclip
+
+    if noclip then
+        noclipConnection = RunService.Stepped:Connect(function()
+            if character then
+                for _, part in ipairs(character:GetDescendants()) do
+                    if part:IsA("BasePart") then
+                        part.CanCollide = false
+                    end
+                end
+            end
+        end)
+
+        noclipButton.Text = "Noclip: ON"
+        noclipButton.BackgroundColor3 = Color3.fromRGB(40, 150, 80)
+    else
+        if noclipConnection then
+            noclipConnection:Disconnect()
+            noclipConnection = nil
+        end
+
+        if character then
+            for _, part in ipairs(character:GetDescendants()) do
+                if part:IsA("BasePart") then
+                    part.CanCollide = true
+                end
+            end
+        end
+
+        noclipButton.Text = "Noclip: OFF"
+        noclipButton.BackgroundColor3 = Color3.fromRGB(45, 45, 55)
+    end
+end)
+
+--// Anti-reset
+antiResetButton.MouseButton1Click:Connect(function()
+    antiReset = not antiReset
+
+    if antiReset then
+        antiResetButton.Text = "Anti-Reset: ON"
+        antiResetButton.BackgroundColor3 = Color3.fromRGB(40, 150, 80)
+    else
+        antiResetButton.Text = "Anti-Reset: OFF"
+        antiResetButton.BackgroundColor3 = Color3.fromRGB(45, 45, 55)
+    end
+end)
+
+-- Prevent the local reset request while enabled
+game:GetService("StarterGui"):SetCore("ResetButtonCallback", function()
+    if antiReset then
+        return
+    end
+
+    if humanoid then
+        humanoid.Health = 0
+    end
+end)
+
+--// Execute / Load
+executeButton.MouseButton1Click:Connect(function()
+    character, humanoid, root = getCharacter()
+
+    executeButton.Text = "Loaded ✓"
+    executeButton.BackgroundColor3 = Color3.fromRGB(40, 150, 80)
+
+    task.wait(1)
+
+    executeButton.Text = "Execute / Load"
+    executeButton.BackgroundColor3 = Color3.fromRGB(45, 45, 55)
+end)
