@@ -44,6 +44,7 @@ local teleportKey = Enum.KeyCode.Tab
 local targetPlayerNames = {}
 local loopTeleporting = false
 local teleportAllActive = false
+local teleportUnderAllActive = false -- State for Teleport Under All toggle
 local autoClickActive = false
 local spinAngle = 0
 local toolNameInput = "Sword"
@@ -357,7 +358,56 @@ MainTab:Toggle({
 	end
 })
 
---// Positioning Tab Elements (Only Teleport Under Once)
+--// Positioning Tab Elements (Teleport Under All & Teleport Under Once)
+PositionTab:Toggle({
+	Title = "Teleport Under All",
+	Desc = "Continuously cycles through and fast-spins underneath ALL server players",
+	Value = false,
+	Callback = function(state)
+		teleportUnderAllActive = state
+		if teleportUnderAllActive then
+			task.spawn(function()
+				while teleportUnderAllActive do
+					local otherPlayers = {}
+					for _, p in ipairs(Players:GetPlayers()) do
+						if p ~= player then
+							table.insert(otherPlayers, p)
+						end
+					end
+
+					if #otherPlayers == 0 then
+						task.wait(1)
+					else
+						for _, target in ipairs(otherPlayers) do
+							if not teleportUnderAllActive then break end
+							local tickStart = os.clock()
+							while teleportUnderAllActive and (os.clock() - tickStart < 0.5) do
+								local activeChar = player.Character
+								local activeRoot = activeChar and activeChar:FindFirstChild("HumanoidRootPart")
+								local targetChar = target.Character
+								local targetRoot = targetChar and targetChar:FindFirstChild("HumanoidRootPart")
+
+								if not activeRoot or not targetRoot or not target.Parent then break end
+
+								spinAngle = spinAngle + math.rad(180)
+								pcall(function()
+									activeRoot.Velocity = Vector3.new(0, 0, 0)
+									activeRoot.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+									activeRoot.CFrame = targetRoot.CFrame * CFrame.new(0, -4, 0) * CFrame.Angles(math.rad(90), 0, spinAngle)
+								end)
+								task.wait(RETURN_TIME)
+							end
+						end
+					end
+					task.wait(RETURN_TIME)
+				end
+			end)
+		end
+	end
+})
+
+PositionTab:Space()
+
 PositionTab:Button({
 	Title = "Teleport Under Once",
 	Desc = "Teleports directly underneath target(s) spinning fast up, then returns back",
