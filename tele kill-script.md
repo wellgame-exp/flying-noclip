@@ -6,7 +6,7 @@ local RunService = game:GetService("RunService")
 local player = Players.LocalPlayer
 
 --// Load WindUI Library (Official Loader)
-local cloneref = (cloneref or clonereference function(instance) return instance end)
+local cloneref = (cloneref or clonereference or function(instance) return instance end)
 local ReplicatedStorage = cloneref(game:GetService("ReplicatedStorage"))
 
 local WindUI
@@ -40,7 +40,7 @@ end
 local SPIN_DURATION = 0.5
 local RETURN_TIME = 0.01
 local teleportKey = Enum.KeyCode.Tab
-local uiToggleKey = Enum.KeyCode.RightShift -- Default UI toggle key
+local uiToggleKey = Enum.KeyCode.RightShift -- Mặc định là RightShift
 
 local targetPlayerNames = {}
 local loopTeleporting = false
@@ -159,7 +159,6 @@ end
 
 --// Core Action: Perform Teleport Once (Super Fast Spin)
 local function executeTeleportOnce()
-	-- If Teleport Down Under toggle is ON, redirect quick-bind/teleport once to underground mode
 	if teleportDownUnderActive then
 		executeTeleportDownOnce()
 		return
@@ -531,10 +530,9 @@ SettingsTab:Input({
 
 SettingsTab:Space()
 
--- New Settings Element: UI Hide/Minimize Toggle Key
 SettingsTab:Input({
 	Title = "UI Toggle Key",
-	Desc = "Enter key to hide/minimize UI (e.g. RightShift, Insert, K)",
+	Desc = "Enter key to hide/minimize UI (e.g. RightShift, LeftShift, Insert, K)",
 	Value = "RightShift",
 	Callback = function(text)
 		if text and #text > 0 then
@@ -605,12 +603,10 @@ SettingsTab:Toggle({
 --// Keyboard Listeners (Quick-Bind & UI Toggle Hide/Minimize)
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
 	if input.UserInputType == Enum.UserInputType.Keyboard then
-		-- Trigger Quick-Bind Teleport
 		if not gameProcessed and input.KeyCode == teleportKey then
 			executeTeleportOnce()
 		end
 
-		-- Trigger UI Hide / Minimize
 		if input.KeyCode == uiToggleKey then
 			pcall(function()
 				Window:Toggle()
