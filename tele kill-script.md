@@ -6,7 +6,7 @@ local RunService = game:GetService("RunService")
 local player = Players.LocalPlayer
 
 --// Load WindUI Library (Official Loader)
-local cloneref = (cloneref or clonereference or function(instance) return instance end)
+local cloneref = (cloneref or clonereference function(instance) return instance end)
 local ReplicatedStorage = cloneref(game:GetService("ReplicatedStorage"))
 
 local WindUI
@@ -40,13 +40,14 @@ end
 local SPIN_DURATION = 0.5
 local RETURN_TIME = 0.01
 local teleportKey = Enum.KeyCode.Tab
+local uiToggleKey = Enum.KeyCode.RightShift -- Default UI toggle key
 
 local targetPlayerNames = {}
 local loopTeleporting = false
 local teleportAllActive = false
 local teleportUnderAllActive = false
 local teleportUnderToggleActive = false
-local teleportDownUnderActive = false -- New Toggle State
+local teleportDownUnderActive = false
 local autoClickActive = false
 local spinAngle = 0
 local toolNameInput = "Sword"
@@ -72,7 +73,7 @@ end
 
 --// Helper: Find Multiple Players Matching current input list
 local function getTargetPlayers()
-	val = {}
+	local val = {}
 	if #targetPlayerNames == 0 then return val end
 
 	for _, text in ipairs(targetPlayerNames) do
@@ -530,6 +531,27 @@ SettingsTab:Input({
 
 SettingsTab:Space()
 
+-- New Settings Element: UI Hide/Minimize Toggle Key
+SettingsTab:Input({
+	Title = "UI Toggle Key",
+	Desc = "Enter key to hide/minimize UI (e.g. RightShift, Insert, K)",
+	Value = "RightShift",
+	Callback = function(text)
+		if text and #text > 0 then
+			local cleanedText = text:match("^%s*(.-)%s*$")
+			local success, keyCode = pcall(function()
+				return Enum.KeyCode[cleanedText]
+			end)
+			if success and keyCode then
+				uiToggleKey = keyCode
+				notify("TeleKill", "UI Toggle Key set to: " .. cleanedText)
+			end
+		end
+	end
+})
+
+SettingsTab:Space()
+
 SettingsTab:Toggle({
 	Title = "Auto Clicker",
 	Desc = "Automatically equips and activates the tool",
@@ -580,9 +602,19 @@ SettingsTab:Toggle({
 	end
 })
 
---// Keyboard Quick-Bind Listener
+--// Keyboard Listeners (Quick-Bind & UI Toggle Hide/Minimize)
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
-	if not gameProcessed and input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode == teleportKey then
-		executeTeleportOnce()
+	if input.UserInputType == Enum.UserInputType.Keyboard then
+		-- Trigger Quick-Bind Teleport
+		if not gameProcessed and input.KeyCode == teleportKey then
+			executeTeleportOnce()
+		end
+
+		-- Trigger UI Hide / Minimize
+		if input.KeyCode == uiToggleKey then
+			pcall(function()
+				Window:Toggle()
+			end)
+		end
 	end
 end)
