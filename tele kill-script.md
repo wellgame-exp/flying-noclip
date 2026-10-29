@@ -45,6 +45,7 @@ local targetPlayerNames = {}
 local loopTeleporting = false
 local teleportAllActive = false
 local teleportUnderAllActive = false
+local teleportUnderToggleActive = false -- State for Teleport Under Toggle
 local autoClickActive = false
 local spinAngle = 0
 local toolNameInput = "Sword"
@@ -148,7 +149,7 @@ local function executeTeleportDownOnce()
 	local originalCFrame = root.CFrame
 
 	task.spawn(function()
-		-- Enable Noclip for 1 second by setting CanCollide = false on all character parts
+		-- Enable Noclip for 1 second by setting CanCollide = false on character parts
 		pcall(function()
 			for _, part in ipairs(character:GetDescendants()) do
 				if part:IsA("BasePart") then
@@ -380,7 +381,7 @@ MainTab:Toggle({
 	end
 })
 
---// Positioning Tab Elements (Teleport Under All & Teleport Under Once with Noclip)
+--// Positioning Tab Elements
 PositionTab:Toggle({
 	Title = "Teleport Under All",
 	Desc = "Continuously cycles through and fast-spins underneath ALL server players",
@@ -422,6 +423,46 @@ PositionTab:Toggle({
 						end
 					end
 					task.wait(RETURN_TIME)
+				end
+			end)
+		end
+	end
+})
+
+PositionTab:Space()
+
+PositionTab:Toggle({
+	Title = "Teleport Under Toggle",
+	Desc = "Continuously keeps you underneath your specific target player spinning fast",
+	Value = false,
+	Callback = function(state)
+		teleportUnderToggleActive = state
+		if teleportUnderToggleActive then
+			task.spawn(function()
+				while teleportUnderToggleActive do
+					local targets = getTargetPlayers()
+					if #targets == 0 then
+						task.wait(0.5)
+					else
+						for _, target in ipairs(targets) do
+							if not teleportUnderToggleActive then break end
+							local character = player.Character
+							local root = character and character:FindFirstChild("HumanoidRootPart")
+							local targetCharacter = target.Character
+							local targetRoot = targetCharacter and targetCharacter:FindFirstChild("HumanoidRootPart")
+
+							if root and targetRoot and target.Parent then
+								spinAngle = spinAngle + math.rad(180)
+								pcall(function()
+									root.Velocity = Vector3.new(0, 0, 0)
+									root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+									root.CFrame = targetRoot.CFrame * CFrame.new(0, -4, 0) * CFrame.Angles(math.rad(90), 0, spinAngle)
+								end)
+							end
+							task.wait(0.01)
+						end
+					end
+					task.wait(0.01)
 				end
 			end)
 		end
