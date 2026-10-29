@@ -44,7 +44,6 @@ local teleportKey = Enum.KeyCode.Tab
 local targetPlayerNames = {}
 local loopTeleporting = false
 local teleportAllActive = false
-local teleportUnderToggleActive = false -- State for toggle mode
 local autoClickActive = false
 local spinAngle = 0
 local toolNameInput = "Sword"
@@ -82,7 +81,7 @@ local function getTargetPlayers()
 	return targets
 end
 
---// Core Action: Perform Teleport Once
+--// Core Action: Perform Teleport Once (Super Fast Spin)
 local function executeTeleportOnce()
 	local character = player.Character
 	local root = character and character:FindFirstChild("HumanoidRootPart")
@@ -110,7 +109,7 @@ local function executeTeleportOnce()
 					local activeRoot = activeChar and activeChar:FindFirstChild("HumanoidRootPart")
 					if not activeRoot then break end
 
-					spinAngle = spinAngle + math.rad(45)
+					spinAngle = spinAngle + math.rad(180)
 					pcall(function()
 						activeRoot.Velocity = Vector3.new(0, 0, 0)
 						activeRoot.CFrame = targetRoot.CFrame * CFrame.new(3, 0, 0) * CFrame.Angles(0, spinAngle, 0)
@@ -130,7 +129,7 @@ local function executeTeleportOnce()
 	end)
 end
 
---// Core Action: Perform Teleport Down Once
+--// Core Action: Perform Teleport Down Once (Super Fast Spin)
 local function executeTeleportDownOnce()
 	local character = player.Character
 	local root = character and character:FindFirstChild("HumanoidRootPart")
@@ -158,10 +157,11 @@ local function executeTeleportDownOnce()
 					local activeRoot = activeChar and activeChar:FindFirstChild("HumanoidRootPart")
 					if not activeRoot then break end
 
+					spinAngle = spinAngle + math.rad(180)
 					pcall(function()
 						activeRoot.Velocity = Vector3.new(0, 0, 0)
 						activeRoot.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
-						activeRoot.CFrame = targetRoot.CFrame * CFrame.new(0, -4, 0) * CFrame.Angles(math.rad(90), 0, 0)
+						activeRoot.CFrame = targetRoot.CFrame * CFrame.new(0, -4, 0) * CFrame.Angles(math.rad(90), 0, spinAngle)
 					end)
 					task.wait(0.01)
 				end
@@ -260,7 +260,7 @@ MainTab:Space()
 
 MainTab:Button({
 	Title = "Teleport Once",
-	Desc = "Teleports & spins around target(s), then teleports back to starting position",
+	Desc = "Teleports & spins fast around target(s), then teleports back",
 	Justify = "Center",
 	Callback = function()
 		executeTeleportOnce()
@@ -271,7 +271,7 @@ MainTab:Space()
 
 MainTab:Toggle({
 	Title = "Loop Teleport Targets",
-	Desc = "Continuously teleports & spins around target(s) without returning",
+	Desc = "Continuously teleports & spins fast around target(s)",
 	Value = false,
 	Callback = function(state)
 		loopTeleporting = state
@@ -293,7 +293,7 @@ MainTab:Toggle({
 
 								if not root or not targetRoot or not target.Parent then break end
 
-								spinAngle = spinAngle + math.rad(45)
+								spinAngle = spinAngle + math.rad(180)
 								pcall(function()
 									root.Velocity = Vector3.new(0, 0, 0)
 									root.CFrame = targetRoot.CFrame * CFrame.new(3, 0, 0) * CFrame.Angles(0, spinAngle, 0)
@@ -313,7 +313,7 @@ MainTab:Space()
 
 MainTab:Toggle({
 	Title = "Teleport All",
-	Desc = "Cycles through and attacks/teleports to ALL server players",
+	Desc = "Cycles through and fast-spins around ALL server players",
 	Value = false,
 	Callback = function(state)
 		teleportAllActive = state
@@ -341,7 +341,7 @@ MainTab:Toggle({
 
 								if not activeRoot or not targetRoot or not target.Parent then break end
 
-								spinAngle = spinAngle + math.rad(45)
+								spinAngle = spinAngle + math.rad(180)
 								pcall(function()
 									activeRoot.Velocity = Vector3.new(0, 0, 0)
 									activeRoot.CFrame = targetRoot.CFrame * CFrame.new(3, 0, 0) * CFrame.Angles(0, spinAngle, 0)
@@ -357,49 +357,10 @@ MainTab:Toggle({
 	end
 })
 
---// Positioning Tab Elements (Toggle First, then Once Button)
-PositionTab:Toggle({
-	Title = "Teleport Under Toggle",
-	Desc = "Continuously keeps you underneath the target player without returning",
-	Value = false,
-	Callback = function(state)
-		teleportUnderToggleActive = state
-		if teleportUnderToggleActive then
-			task.spawn(function()
-				while teleportUnderToggleActive do
-					local targets = getTargetPlayers()
-					if #targets == 0 then
-						task.wait(0.5)
-					else
-						for _, target in ipairs(targets) do
-							if not teleportUnderToggleActive then break end
-							local character = player.Character
-							local root = character and character:FindFirstChild("HumanoidRootPart")
-							local targetCharacter = target.Character
-							local targetRoot = targetCharacter and targetCharacter:FindFirstChild("HumanoidRootPart")
-
-							if root and targetRoot and target.Parent then
-								pcall(function()
-									root.Velocity = Vector3.new(0, 0, 0)
-									root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
-									root.CFrame = targetRoot.CFrame * CFrame.new(0, -4, 0) * CFrame.Angles(math.rad(90), 0, 0)
-								end)
-							end
-							task.wait(0.01)
-						end
-					end
-					task.wait(0.01)
-				end
-			end)
-		end
-	end
-})
-
-PositionTab:Space()
-
+--// Positioning Tab Elements (Only Teleport Under Once)
 PositionTab:Button({
 	Title = "Teleport Under Once",
-	Desc = "Teleports directly underneath target(s) facing up, then returns back",
+	Desc = "Teleports directly underneath target(s) spinning fast up, then returns back",
 	Justify = "Center",
 	Callback = function()
 		executeTeleportDownOnce()
