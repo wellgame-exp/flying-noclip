@@ -45,7 +45,8 @@ local targetPlayerNames = {}
 local loopTeleporting = false
 local teleportAllActive = false
 local teleportUnderAllActive = false
-local teleportUnderToggleActive = false -- State for Teleport Under Toggle
+local teleportUnderToggleActive = false
+local teleportDownUnderActive = false -- New Toggle State
 local autoClickActive = false
 local spinAngle = 0
 local toolNameInput = "Sword"
@@ -71,64 +72,16 @@ end
 
 --// Helper: Find Multiple Players Matching current input list
 local function getTargetPlayers()
-	local targets = {}
-	if #targetPlayerNames == 0 then return targets end
+	val = {}
+	if #targetPlayerNames == 0 then return val end
 
 	for _, text in ipairs(targetPlayerNames) do
 		local matchedPlayer = findSinglePlayer(text)
-		if matchedPlayer and not table.find(targets, matchedPlayer) then
-			table.insert(targets, matchedPlayer)
+		if matchedPlayer and not table.find(val, matchedPlayer) then
+			table.insert(val, matchedPlayer)
 		end
 	end
-	return targets
-end
-
---// Core Action: Perform Teleport Once (Super Fast Spin)
-local function executeTeleportOnce()
-	local character = player.Character
-	local root = character and character:FindFirstChild("HumanoidRootPart")
-	if not root then 
-		notify("TeleKill", "Character not ready")
-		return 
-	end
-
-	local targets = getTargetPlayers()
-	if #targets == 0 then
-		notify("TeleKill", "No targets found/matched")
-		return
-	end
-
-	local originalCFrame = root.CFrame
-
-	task.spawn(function()
-		for _, target in ipairs(targets) do
-			local targetCharacter = target.Character
-			local targetRoot = targetCharacter and targetCharacter:FindFirstChild("HumanoidRootPart")
-			if targetRoot then
-				local startTime = os.clock()
-				while os.clock() - startTime < SPIN_DURATION do
-					local activeChar = player.Character
-					local activeRoot = activeChar and activeChar:FindFirstChild("HumanoidRootPart")
-					if not activeRoot then break end
-
-					spinAngle = spinAngle + math.rad(180)
-					pcall(function()
-						activeRoot.Velocity = Vector3.new(0, 0, 0)
-						activeRoot.CFrame = targetRoot.CFrame * CFrame.new(3, 0, 0) * CFrame.Angles(0, spinAngle, 0)
-					end)
-					task.wait(0.01)
-				end
-			end
-		end
-
-		if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
-			local finalRoot = player.Character.HumanoidRootPart
-			pcall(function()
-				finalRoot.Velocity = Vector3.new(0, 0, 0)
-				finalRoot.CFrame = originalCFrame
-			end)
-		end
-	end)
+	return val
 end
 
 --// Core Action: Perform Teleport Down Once (With 1-Second Noclip)
@@ -200,6 +153,60 @@ local function executeTeleportDownOnce()
 				end
 			end
 		end)
+	end)
+end
+
+--// Core Action: Perform Teleport Once (Super Fast Spin)
+local function executeTeleportOnce()
+	-- If Teleport Down Under toggle is ON, redirect quick-bind/teleport once to underground mode
+	if teleportDownUnderActive then
+		executeTeleportDownOnce()
+		return
+	end
+
+	local character = player.Character
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	if not root then 
+		notify("TeleKill", "Character not ready")
+		return 
+	end
+
+	local targets = getTargetPlayers()
+	if #targets == 0 then
+		notify("TeleKill", "No targets found/matched")
+		return
+	end
+
+	local originalCFrame = root.CFrame
+
+	task.spawn(function()
+		for _, target in ipairs(targets) do
+			local targetCharacter = target.Character
+			local targetRoot = targetCharacter and targetCharacter:FindFirstChild("HumanoidRootPart")
+			if targetRoot then
+				local startTime = os.clock()
+				while os.clock() - startTime < SPIN_DURATION do
+					local activeChar = player.Character
+					local activeRoot = activeChar and activeChar:FindFirstChild("HumanoidRootPart")
+					if not activeRoot then break end
+
+					spinAngle = spinAngle + math.rad(180)
+					pcall(function()
+						activeRoot.Velocity = Vector3.new(0, 0, 0)
+						activeRoot.CFrame = targetRoot.CFrame * CFrame.new(3, 0, 0) * CFrame.Angles(0, spinAngle, 0)
+					end)
+					task.wait(0.01)
+				end
+			end
+		end
+
+		if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+			local finalRoot = player.Character.HumanoidRootPart
+			pcall(function()
+				finalRoot.Velocity = Vector3.new(0, 0, 0)
+				finalRoot.CFrame = originalCFrame
+			end)
+		end
 	end)
 end
 
@@ -382,6 +389,17 @@ MainTab:Toggle({
 })
 
 --// Positioning Tab Elements
+PositionTab:Toggle({
+	Title = "Teleport Down Under",
+	Desc = "ON = Teleport Once uses Underground mode | OFF = Uses Main Operations",
+	Value = false,
+	Callback = function(state)
+		teleportDownUnderActive = state
+	end
+})
+
+PositionTab:Space()
+
 PositionTab:Toggle({
 	Title = "Teleport Under All",
 	Desc = "Continuously cycles through and fast-spins underneath ALL server players",
