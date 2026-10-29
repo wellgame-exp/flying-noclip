@@ -44,6 +44,7 @@ local teleportKey = Enum.KeyCode.Tab
 local targetPlayerNames = {}
 local loopTeleporting = false
 local teleportAllActive = false
+local teleportUnderToggleActive = false -- State for toggle mode
 local autoClickActive = false
 local spinAngle = 0
 local toolNameInput = "Sword"
@@ -356,7 +357,46 @@ MainTab:Toggle({
 	end
 })
 
---// Positioning Tab Elements
+--// Positioning Tab Elements (Toggle First, then Once Button)
+PositionTab:Toggle({
+	Title = "Teleport Under Toggle",
+	Desc = "Continuously keeps you underneath the target player without returning",
+	Value = false,
+	Callback = function(state)
+		teleportUnderToggleActive = state
+		if teleportUnderToggleActive then
+			task.spawn(function()
+				while teleportUnderToggleActive do
+					local targets = getTargetPlayers()
+					if #targets == 0 then
+						task.wait(0.5)
+					else
+						for _, target in ipairs(targets) do
+							if not teleportUnderToggleActive then break end
+							local character = player.Character
+							local root = character and character:FindFirstChild("HumanoidRootPart")
+							local targetCharacter = target.Character
+							local targetRoot = targetCharacter and targetCharacter:FindFirstChild("HumanoidRootPart")
+
+							if root and targetRoot and target.Parent then
+								pcall(function()
+									root.Velocity = Vector3.new(0, 0, 0)
+									root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+									root.CFrame = targetRoot.CFrame * CFrame.new(0, -4, 0) * CFrame.Angles(math.rad(90), 0, 0)
+								end)
+							end
+							task.wait(0.01)
+						end
+					end
+					task.wait(0.01)
+				end
+			end)
+		end
+	end
+})
+
+PositionTab:Space()
+
 PositionTab:Button({
 	Title = "Teleport Under Once",
 	Desc = "Teleports directly underneath target(s) facing up, then returns back",
