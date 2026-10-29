@@ -8,7 +8,6 @@ local player = Players.LocalPlayer
 --// Load WindUI Library (Official Loader)
 local cloneref = (cloneref or clonereference or function(instance) return instance end)
 local ReplicatedStorage = cloneref(game:GetService("ReplicatedStorage"))
-local HttpService = cloneref(game:GetService("HttpService"))
 
 local WindUI
 
@@ -28,9 +27,18 @@ do
 	end
 end
 
+--// Helper Notification Wrapper
+local function notify(title, content)
+	pcall(function()
+		if WindUI and WindUI.Notify then
+			WindUI:Notify({ Title = title, Content = content, Duration = 2 })
+		end
+	end)
+end
+
 --// Settings & State Variables
 local SPIN_DURATION = 0.5
-local RETURN_TIME = 0.01 -- Fast spin update rate
+local RETURN_TIME = 0.01
 local teleportKey = Enum.KeyCode.Tab
 
 local targetPlayerNames = {}
@@ -42,11 +50,11 @@ local toolNameInput = "Sword"
 
 --// Helper: Find Single Player Matching a Query
 local function findSinglePlayer(text)
-	if not text then return nil end
+	if not text or text == "" then return nil end
 	text = text:lower():match("^%s*(.-)%s*$")
 	if text == "" then return nil end
 
-	for _, target in Players:GetPlayers() do
+	for _, target in ipairs(Players:GetPlayers()) do
 		if target ~= player then
 			local username = target.Name:lower()
 			local displayName = target.DisplayName:lower()
@@ -78,17 +86,16 @@ local function executeTeleportOnce()
 	local character = player.Character
 	local root = character and character:FindFirstChild("HumanoidRootPart")
 	if not root then 
-		WindUI:Notify({ Title = "TeleKill", Content = "Character not ready", Duration = 2 })
+		notify("TeleKill", "Character not ready")
 		return 
 	end
 
 	local targets = getTargetPlayers()
 	if #targets == 0 then
-		WindUI:Notify({ Title = "TeleKill", Content = "No targets found/matched", Duration = 2 })
+		notify("TeleKill", "No targets found/matched")
 		return
 	end
 
-	-- Save position before teleporting
 	local originalCFrame = root.CFrame
 
 	task.spawn(function()
@@ -102,19 +109,71 @@ local function executeTeleportOnce()
 					local activeRoot = activeChar and activeChar:FindFirstChild("HumanoidRootPart")
 					if not activeRoot then break end
 
-					spinAngle += math.rad(45)
-					activeRoot.Velocity = Vector3.new(0, 0, 0)
-					activeRoot.CFrame = targetRoot.CFrame * CFrame.new(3, 0, 0) * CFrame.Angles(0, spinAngle, 0)
+					spinAngle = spinAngle + math.rad(45)
+					pcall(function()
+						activeRoot.Velocity = Vector3.new(0, 0, 0)
+						activeRoot.CFrame = targetRoot.CFrame * CFrame.new(3, 0, 0) * CFrame.Angles(0, spinAngle, 0)
+					end)
 					task.wait(0.01)
 				end
 			end
 		end
 
-		-- Teleport back to starting position safely
 		if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
 			local finalRoot = player.Character.HumanoidRootPart
-			finalRoot.Velocity = Vector3.new(0, 0, 0)
-			finalRoot.CFrame = originalCFrame
+			pcall(function()
+				finalRoot.Velocity = Vector3.new(0, 0, 0)
+				finalRoot.CFrame = originalCFrame
+			end)
+		end
+	end)
+end
+
+--// Core Action: Perform Teleport Down Once
+local function executeTeleportDownOnce()
+	local character = player.Character
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	if not root then 
+		notify("TeleKill", "Character not ready")
+		return 
+	end
+
+	local targets = getTargetPlayers()
+	if #targets == 0 then
+		notify("TeleKill", "No targets found/matched")
+		return
+	end
+
+	local originalCFrame = root.CFrame
+
+	task.spawn(function()
+		for _, target in ipairs(targets) do
+			local targetCharacter = target.Character
+			local targetRoot = targetCharacter and targetCharacter:FindFirstChild("HumanoidRootPart")
+			if targetRoot then
+				local startTime = os.clock()
+				while os.clock() - startTime < SPIN_DURATION do
+					local activeChar = player.Character
+					local activeRoot = activeChar and activeChar:FindFirstChild("HumanoidRootPart")
+					if not activeRoot then break end
+
+					pcall(function()
+						activeRoot.Velocity = Vector3.new(0, 0, 0)
+						activeRoot.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+						activeRoot.CFrame = targetRoot.CFrame * CFrame.new(0, -4, 0) * CFrame.Angles(math.rad(90), 0, 0)
+					end)
+					task.wait(0.01)
+				end
+			end
+		end
+
+		if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+			local finalRoot = player.Character.HumanoidRootPart
+			pcall(function()
+				finalRoot.Velocity = Vector3.new(0, 0, 0)
+				finalRoot.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+				finalRoot.CFrame = originalCFrame
+			end)
 		end
 	end)
 end
@@ -146,7 +205,7 @@ local Window = WindUI:CreateWindow({
 })
 
 --// Window Tags
-do
+if Window.Tag then
 	Window:Tag({
 		Title = "v" .. (WindUI.Version or "1.0"),
 		Icon = "github",
@@ -185,10 +244,12 @@ MainTab:Input({
 	Placeholder = "Enter Player Names...",
 	Callback = function(text)
 		targetPlayerNames = {}
-		for name in string.gmatch(text, "[^,]+") do
-			local cleaned = name:match("^%s*(.-)%s*$")
-			if cleaned ~= "" then
-				table.insert(targetPlayerNames, cleaned)
+		if text then
+			for name in string.gmatch(text, "[^,]+") do
+				local cleaned = name:match("^%s*(.-)%s*$")
+				if cleaned and cleaned ~= "" then
+					table.insert(targetPlayerNames, cleaned)
+				end
 			end
 		end
 	end
@@ -231,9 +292,11 @@ MainTab:Toggle({
 
 								if not root or not targetRoot or not target.Parent then break end
 
-								spinAngle += math.rad(45)
-								root.Velocity = Vector3.new(0, 0, 0)
-								root.CFrame = targetRoot.CFrame * CFrame.new(3, 0, 0) * CFrame.Angles(0, spinAngle, 0)
+								spinAngle = spinAngle + math.rad(45)
+								pcall(function()
+									root.Velocity = Vector3.new(0, 0, 0)
+									root.CFrame = targetRoot.CFrame * CFrame.new(3, 0, 0) * CFrame.Angles(0, spinAngle, 0)
+								end)
 								task.wait(RETURN_TIME)
 							end
 						end
@@ -257,7 +320,7 @@ MainTab:Toggle({
 			task.spawn(function()
 				while teleportAllActive do
 					local otherPlayers = {}
-					for _, p in Players:GetPlayers() do
+					for _, p in ipairs(Players:GetPlayers()) do
 						if p ~= player then
 							table.insert(otherPlayers, p)
 						end
@@ -266,7 +329,7 @@ MainTab:Toggle({
 					if #otherPlayers == 0 then
 						task.wait(1)
 					else
-						for _, target in otherPlayers do
+						for _, target in ipairs(otherPlayers) do
 							if not teleportAllActive then break end
 							local tickStart = os.clock()
 							while teleportAllActive and (os.clock() - tickStart < 0.5) do
@@ -277,9 +340,11 @@ MainTab:Toggle({
 
 								if not activeRoot or not targetRoot or not target.Parent then break end
 
-								spinAngle += math.rad(45)
-								activeRoot.Velocity = Vector3.new(0, 0, 0)
-								activeRoot.CFrame = targetRoot.CFrame * CFrame.new(3, 0, 0) * CFrame.Angles(0, spinAngle, 0)
+								spinAngle = spinAngle + math.rad(45)
+								pcall(function()
+									activeRoot.Velocity = Vector3.new(0, 0, 0)
+									activeRoot.CFrame = targetRoot.CFrame * CFrame.new(3, 0, 0) * CFrame.Angles(0, spinAngle, 0)
+								end)
 								task.wait(RETURN_TIME)
 							end
 						end
@@ -291,56 +356,13 @@ MainTab:Toggle({
 	end
 })
 
---// Position Tab Elements (One-Click Teleport Underneath)
+--// Positioning Tab Elements
 PositionTab:Button({
 	Title = "Teleport Under Once",
 	Desc = "Teleports directly underneath target(s) facing up, then returns back",
 	Justify = "Center",
 	Callback = function()
-		local character = player.Character
-		local root = character and character:FindFirstChild("HumanoidRootPart")
-		if not root then 
-			WindUI:Notify({ Title = "TeleKill", Content = "Character not ready", Duration = 2 })
-			return 
-		end
-
-		local targets = getTargetPlayers()
-		if #targets == 0 then
-			WindUI:Notify({ Title = "TeleKill", Content = "No targets found/matched", Duration = 2 })
-			return
-		end
-
-		local originalCFrame = root.CFrame
-
-		task.spawn(function()
-			for _, target in ipairs(targets) do
-				local targetCharacter = target.Character
-				local targetRoot = targetCharacter and targetCharacter:FindFirstChild("HumanoidRootPart")
-				if targetRoot then
-					local startTime = os.clock()
-					while os.clock() - startTime < SPIN_DURATION do
-						local activeChar = player.Character
-						local activeRoot = activeChar and activeChar:FindFirstChild("HumanoidRootPart")
-						if not activeRoot then break end
-
-						-- Stop velocity to avoid speed/falling glitch
-						activeRoot.Velocity = Vector3.new(0, 0, 0)
-						activeRoot.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
-						-- Position 4 studs underneath facing upwards
-						activeRoot.CFrame = targetRoot.CFrame * CFrame.new(0, -4, 0) * CFrame.Angles(math.rad(90), 0, 0)
-						task.wait(0.01)
-					end
-				end
-			end
-
-			-- Safely return to starting position
-			if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
-				local finalRoot = player.Character.HumanoidRootPart
-				finalRoot.Velocity = Vector3.new(0, 0, 0)
-				finalRoot.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
-				finalRoot.CFrame = originalCFrame
-			end
-		end)
+		executeTeleportDownOnce()
 	end
 })
 
@@ -350,7 +372,7 @@ SettingsTab:Input({
 	Desc = "Tool name to equip & auto-click",
 	Value = "Sword",
 	Callback = function(text)
-		toolNameInput = text
+		if text then toolNameInput = text end
 	end
 })
 
@@ -368,7 +390,7 @@ SettingsTab:Input({
 			end)
 			if success and keyCode then
 				teleportKey = keyCode
-				WindUI:Notify({ Title = "TeleKill", Content = "Quick-bind set to: " .. cleanedText, Duration = 2 })
+				notify("TeleKill", "Quick-bind set to: " .. cleanedText)
 			end
 		end
 	end
@@ -386,37 +408,37 @@ SettingsTab:Toggle({
 			task.spawn(function()
 				while autoClickActive do
 					local inputName = toolNameInput:lower():match("^%s*(.-)%s*$")
-					if inputName == "" then break end
+					if inputName and inputName ~= "" then
+						local character = player.Character
+						local backpack = player:FindFirstChildOfClass("Backpack")
 
-					local character = player.Character
-					local backpack = player:FindFirstChildOfClass("Backpack")
-
-					if character then
-						local equippedTool = nil
-						for _, item in character:GetChildren() do
-							if item:IsA("Tool") and item.Name:lower() == inputName then
-								equippedTool = item
-								break
-							end
-						end
-
-						if not equippedTool and backpack then
-							for _, item in backpack:GetChildren() do
+						if character then
+							local equippedTool = nil
+							for _, item in ipairs(character:GetChildren()) do
 								if item:IsA("Tool") and item.Name:lower() == inputName then
-									item.Parent = character
 									equippedTool = item
 									break
 								end
 							end
-						end
 
-						if equippedTool then
-							pcall(function()
-								equippedTool:Activate()
-								VirtualUser:Button1Down(Vector2.new(0,0))
-								task.wait(0.01)
-								VirtualUser:Button1Up(Vector2.new(0,0))
-							end)
+							if not equippedTool and backpack then
+								for _, item in ipairs(backpack:GetChildren()) do
+									if item:IsA("Tool") and item.Name:lower() == inputName then
+										item.Parent = character
+										equippedTool = item
+										break
+									end
+								end
+							end
+
+							if equippedTool then
+								pcall(function()
+									equippedTool:Activate()
+									VirtualUser:Button1Down(Vector2.new(0, 0))
+									task.wait(0.01)
+									VirtualUser:Button1Up(Vector2.new(0, 0))
+								end)
+							end
 						end
 					end
 					task.wait(0.05)
@@ -426,7 +448,7 @@ SettingsTab:Toggle({
 	end
 })
 
---// Keyboard Quick-Bind Support (Runs "Teleport Once" logic)
+--// Keyboard Quick-Bind Listener
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
 	if not gameProcessed and input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode == teleportKey then
 		executeTeleportOnce()
