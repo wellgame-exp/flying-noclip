@@ -44,7 +44,7 @@ local teleportKey = Enum.KeyCode.Tab
 local targetPlayerNames = {}
 local loopTeleporting = false
 local teleportAllActive = false
-local teleportUnderAllActive = false -- State for Teleport Under All toggle
+local teleportUnderAllActive = false
 local autoClickActive = false
 local spinAngle = 0
 local toolNameInput = "Sword"
@@ -130,7 +130,7 @@ local function executeTeleportOnce()
 	end)
 end
 
---// Core Action: Perform Teleport Down Once (Super Fast Spin)
+--// Core Action: Perform Teleport Down Once (With 1-Second Noclip)
 local function executeTeleportDownOnce()
 	local character = player.Character
 	local root = character and character:FindFirstChild("HumanoidRootPart")
@@ -148,6 +148,15 @@ local function executeTeleportDownOnce()
 	local originalCFrame = root.CFrame
 
 	task.spawn(function()
+		-- Enable Noclip for 1 second by setting CanCollide = false on all character parts
+		pcall(function()
+			for _, part in ipairs(character:GetDescendants()) do
+				if part:IsA("BasePart") then
+					part.CanCollide = false
+				end
+			end
+		end)
+
 		for _, target in ipairs(targets) do
 			local targetCharacter = target.Character
 			local targetRoot = targetCharacter and targetCharacter:FindFirstChild("HumanoidRootPart")
@@ -169,6 +178,7 @@ local function executeTeleportDownOnce()
 			end
 		end
 
+		-- Return to original position
 		if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
 			local finalRoot = player.Character.HumanoidRootPart
 			pcall(function()
@@ -177,6 +187,18 @@ local function executeTeleportDownOnce()
 				finalRoot.CFrame = originalCFrame
 			end)
 		end
+
+		-- Wait for the 1-second noclip duration to pass, then restore collision
+		task.wait(0.5)
+		pcall(function()
+			if player.Character then
+				for _, part in ipairs(player.Character:GetDescendants()) do
+					if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
+						part.CanCollide = true
+					end
+				end
+			end
+		end)
 	end)
 end
 
@@ -358,7 +380,7 @@ MainTab:Toggle({
 	end
 })
 
---// Positioning Tab Elements (Teleport Under All & Teleport Under Once)
+--// Positioning Tab Elements (Teleport Under All & Teleport Under Once with Noclip)
 PositionTab:Toggle({
 	Title = "Teleport Under All",
 	Desc = "Continuously cycles through and fast-spins underneath ALL server players",
@@ -410,7 +432,7 @@ PositionTab:Space()
 
 PositionTab:Button({
 	Title = "Teleport Under Once",
-	Desc = "Teleports directly underneath target(s) spinning fast up, then returns back",
+	Desc = "Noclips for 1s, teleports underneath target(s) spinning fast up, then returns back",
 	Justify = "Center",
 	Callback = function()
 		executeTeleportDownOnce()
