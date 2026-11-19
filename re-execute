@@ -1,0 +1,845 @@
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local VirtualUser = game:GetService("VirtualUser")
+local RunService = game:GetService("RunService")
+
+local player = Players.LocalPlayer
+
+--// Optional Remote Source for Re-Execute (set if hosting/loading via URL)
+local SCRIPT_URL = "" -- e.g. "https://raw.githubusercontent.com/.../script.lua"
+local cachedSource = (getgenv and getgenv()._TELEKILL_HUB_SOURCE) or nil
+
+--// Load WindUI Library (Official Loader)
+local cloneref = (cloneref or clonereference or function(instance) return instance end)
+local ReplicatedStorage = cloneref(game:GetService("ReplicatedStorage"))
+
+local WindUI
+
+do
+	local ok, result = pcall(function()
+		return require("./src/Init")
+	end)
+
+	if ok then
+		WindUI = result
+	else
+		if cloneref(RunService):IsStudio() then
+			WindUI = require(cloneref(ReplicatedStorage:WaitForChild("WindUI"):WaitForChild("Init")))
+		else
+			WindUI = loadstring(game:HttpGet("https://raw.githubusercontent.com/Footagesus/WindUI/main/dist/main.lua"))()
+		end
+	end
+end
+
+--// Helper Notification Wrapper
+local function notify(title, content)
+	pcall(function()
+		if WindUI and WindUI.Notify then
+			WindUI:Notify({ Title = title, Content = content, Duration = 2 })
+		end
+	end)
+end
+
+--// Settings & State Variables
+local SPIN_DURATION = 0.5
+local RETURN_TIME = 0.01
+local teleportKey = Enum.KeyCode.Tab
+local uiToggleKey = Enum.KeyCode.RightShift -- Mặc định là RightShift
+
+local targetPlayerNames = {}
+local loopTeleporting = false
+local teleportAllActive = false
+local teleportUnderAllActive = false
+local teleportUnderToggleActive = false
+local teleportDownUnderActive = false
+local closerPlayerActive = false
+local closestPlayer = nil
+local autoClickActive = false
+local spinAngle = 0
+local toolNameInput = "Sword"
+
+local selectedTheme = "Dark"
+local selectedHexColor = "#30FF6A"
+
+--// Helper: Parse Hex String to Color3
+local function hexToColor3(hex)
+	if type(hex) ~= "string" then return nil end
+	local cleaned = hex:gsub("#", ""):match("^%s*(.-)%s*$")
+	if #cleaned == 6 and cleaned:match("^%x+$") then
+		local r = tonumber(cleaned:sub(1, 2), 16) / 255
+		local g = tonumber(cleaned:sub(3, 4), 16) / 255
+		local b = tonumber(cleaned:sub(5, 6), 16) / 255
+		return Color3.new(r, g, b)
+	end
+	return nil
+end
+
+--// Helper: Find Single Player Matching a Query
+local function findSinglePlayer(text)
+	if not text or text == "" then return nil end
+	text = text:lower():match("^%s*(.-)%s*$")
+	if text == "" then return nil end
+
+	for _, target in ipairs(Players:GetPlayers()) do
+		if target ~= player then
+			local username = target.Name:lower()
+			local displayName = target.DisplayName:lower()
+
+			if username:sub(1, #text) == text or displayName:sub(1, #text) == text then
+				return target
+			end
+		end
+	end
+	return nil
+end
+
+--// Helper: Find Closest Player to LocalPlayer
+local function getClosestPlayer()
+	local character = player.Character
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	if not root then return nil end
+
+	local nearestPlayer = nil
+	local shortestDistance = math.huge
+
+	for _, target in ipairs(Players:GetPlayers()) do
+		if target ~= player and target.Parent then
+			local targetChar = target.Character
+			local targetRoot = targetChar and targetChar:FindFirstChild("HumanoidRootPart")
+			if targetRoot then
+				local distance = (targetRoot.Position - root.Position).Magnitude
+				if distance < shortestDistance then
+					shortestDistance = distance
+					nearestPlayer = target
+				end
+			end
+		end
+	end
+
+	return nearestPlayer
+end
+
+--// Helper: Find Multiple Players Matching current input list (or Closer Player)
+local function getTargetPlayers()
+	if closerPlayerActive then
+		local nearest = getClosestPlayer()
+		closestPlayer = nearest
+		if nearest then
+			return { nearest }
+		end
+		return {}
+	end
+
+	local val = {}
+	if #targetPlayerNames == 0 then return val end
+
+	for _, text in ipairs(targetPlayerNames) do
+		local matchedPlayer = findSinglePlayer(text)
+		if matchedPlayer and not table.find(val, matchedPlayer) then
+			table.insert(val, matchedPlayer)
+		end
+	end
+	return val
+end
+
+--// Background Updater for Closer Player
+task.spawn(function()
+	while true do
+		if closerPlayerActive then
+			closestPlayer = getClosestPlayer()
+		else
+			closestPlayer = nil
+		end
+		task.wait(0.1)
+	end
+end)
+
+--// Core Action: Perform Teleport Down Once (With 1-Second Noclip)
+local function executeTeleportDownOnce()
+	local character = player.Character
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	if not root then 
+		notify("TeleKill", "Character not ready")
+		return 
+	end
+
+	local targets = getTargetPlayers()
+	if #targets == 0 then
+		notify("TeleKill", "No targets found/matched")
+		return
+	end
+
+	local originalCFrame = root.CFrame
+
+	task.spawn(function()
+		-- Enable Noclip for 1 second by setting CanCollide = false on character parts
+		pcall(function()
+			for _, part in ipairs(character:GetDescendants()) do
+				if part:IsA("BasePart") then
+					part.CanCollide = false
+				end
+			end
+		end)
+
+		for _, target in ipairs(targets) do
+			local targetCharacter = target.Character
+			local targetRoot = targetCharacter and targetCharacter:FindFirstChild("HumanoidRootPart")
+			if targetRoot then
+				local startTime = os.clock()
+				while os.clock() - startTime < SPIN_DURATION do
+					local activeChar = player.Character
+					local activeRoot = activeChar and activeChar:FindFirstChild("HumanoidRootPart")
+					if not activeRoot then break end
+
+					spinAngle = spinAngle + math.rad(180)
+					pcall(function()
+						activeRoot.Velocity = Vector3.new(0, 0, 0)
+						activeRoot.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+						activeRoot.CFrame = targetRoot.CFrame * CFrame.new(0, -4, 0) * CFrame.Angles(math.rad(90), 0, spinAngle)
+					end)
+					task.wait(0.01)
+				end
+			end
+		end
+
+		-- Return to original position
+		if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+			local finalRoot = player.Character.HumanoidRootPart
+			pcall(function()
+				finalRoot.Velocity = Vector3.new(0, 0, 0)
+				finalRoot.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+				finalRoot.CFrame = originalCFrame
+			end)
+		end
+
+		-- Wait for the 1-second noclip duration to pass, then restore collision
+		task.wait(0.5)
+		pcall(function()
+			if player.Character then
+				for _, part in ipairs(player.Character:GetDescendants()) do
+					if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
+						part.CanCollide = true
+					end
+				end
+			end
+		end)
+	end)
+end
+
+--// Core Action: Perform Teleport Once (Super Fast Spin)
+local function executeTeleportOnce()
+	if teleportDownUnderActive then
+		executeTeleportDownOnce()
+		return
+	end
+
+	local character = player.Character
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	if not root then 
+		notify("TeleKill", "Character not ready")
+		return 
+	end
+
+	local targets = getTargetPlayers()
+	if #targets == 0 then
+		notify("TeleKill", "No targets found/matched")
+		return
+	end
+
+	local originalCFrame = root.CFrame
+
+	task.spawn(function()
+		for _, target in ipairs(targets) do
+			local targetCharacter = target.Character
+			local targetRoot = targetCharacter and targetCharacter:FindFirstChild("HumanoidRootPart")
+			if targetRoot then
+				local startTime = os.clock()
+				while os.clock() - startTime < SPIN_DURATION do
+					local activeChar = player.Character
+					local activeRoot = activeChar and activeChar:FindFirstChild("HumanoidRootPart")
+					if not activeRoot then break end
+
+					spinAngle = spinAngle + math.rad(180)
+					pcall(function()
+						activeRoot.Velocity = Vector3.new(0, 0, 0)
+						activeRoot.CFrame = targetRoot.CFrame * CFrame.new(3, 0, 0) * CFrame.Angles(0, spinAngle, 0)
+					end)
+					task.wait(0.01)
+				end
+			end
+		end
+
+		if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+			local finalRoot = player.Character.HumanoidRootPart
+			pcall(function()
+				finalRoot.Velocity = Vector3.new(0, 0, 0)
+				finalRoot.CFrame = originalCFrame
+			end)
+		end
+	end)
+end
+
+--// Create Window
+local Window = WindUI:CreateWindow({
+	Title = "TeleKill Hub | WindUI",
+	Folder = "TeleKillHub",
+	Icon = "solar:folder-2-bold-duotone",
+	Theme = selectedTheme,
+	NewElements = true,
+	HideSearchBar = false,
+	OpenButton = {
+		Title = "Open TeleKill UI",
+		CornerRadius = UDim.new(1, 0),
+		StrokeThickness = 3,
+		Enabled = true,
+		Draggable = true,
+		OnlyMobile = false,
+		Scale = 0.5,
+		Color = ColorSequence.new(
+			Color3.fromHex("#30FF6A"),
+			Color3.fromHex("#e7ff2f")
+		),
+	},
+	Topbar = {
+		Height = 44,
+		ButtonsType = "Mac",
+	},
+})
+
+--// Helper: Apply Theme & Color Changes
+local function applyThemeAndColor(themeName, hexStr)
+	local col = hexToColor3(hexStr)
+	pcall(function()
+		if themeName and Window.SetTheme then
+			Window:SetTheme(themeName)
+		elseif themeName and WindUI.SetTheme then
+			WindUI:SetTheme(themeName)
+		end
+	end)
+
+	if col then
+		pcall(function()
+			if Window.OpenButton and Window.OpenButton.Color then
+				Window.OpenButton.Color = ColorSequence.new(col, Color3.fromHex("#e7ff2f"))
+			end
+		end)
+		pcall(function()
+			if WindUI.SetAccentColor then
+				WindUI:SetAccentColor(col)
+			end
+		end)
+	end
+end
+
+--// Helper: Re-Execute Script Safely
+local function reExecuteScript()
+	-- Stop active loops before re-executing
+	loopTeleporting = false
+	teleportAllActive = false
+	teleportUnderAllActive = false
+	teleportUnderToggleActive = false
+	autoClickActive = false
+
+	pcall(function()
+		if Window.Destroy then
+			Window:Destroy()
+		end
+	end)
+
+	task.spawn(function()
+		task.wait(0.15)
+		if SCRIPT_URL and SCRIPT_URL ~= "" then
+			local ok, err = pcall(function()
+				loadstring(game:HttpGet(SCRIPT_URL))()
+			end)
+			if not ok then
+				warn("Re-execute failed: " .. tostring(err))
+			end
+		elseif cachedSource and type(cachedSource) == "string" and cachedSource ~= "" then
+			local ok, err = pcall(function()
+				loadstring(cachedSource)()
+			end)
+			if not ok then
+				warn("Re-execute cached source failed: " .. tostring(err))
+			end
+		else
+			notify("Setting", "Set SCRIPT_URL at top of script or run via loadstring to enable instant re-execute.")
+		end
+	end)
+end
+
+--// Window Tags
+if Window.Tag then
+	Window:Tag({
+		Title = "v" .. (WindUI.Version or "1.0"),
+		Icon = "github",
+		Color = Color3.fromHex("#1c1c1c"),
+		Border = true,
+	})
+end
+
+--// Create Sections & Tabs
+local TelekillSection = Window:Section({
+	Title = "TeleKill Controls",
+})
+
+local PositioningSection = Window:Section({
+	Title = "Positioning",
+})
+
+local MainTab = PositioningSection:Tab({
+	Title = "Main Operations",
+	Icon = "solar:home-2-bold",
+	Border = true,
+})
+
+local PositionTab = PositioningSection:Tab({
+	Title = "Positioning",
+	Icon = "solar:map-point-bold",
+	Border = true,
+})
+
+local CloserPlayerTab = PositioningSection:Tab({
+	Title = "Closer Player",
+	Icon = "solar:radar-2-bold",
+	Border = true,
+})
+
+local SettingsTab = TelekillSection:Tab({
+	Title = "Configuration",
+	Icon = "solar:settings-bold",
+	Border = true,
+})
+
+local SettingTab = TelekillSection:Tab({
+	Title = "Setting",
+	Icon = "solar:palette-bold",
+	Border = true,
+})
+
+--// Main Operations Tab Elements (Under Positioning)
+MainTab:Input({
+	Title = "Target Players",
+	Desc = "Separate multiple names/tags with commas (e.g. Roblox, John)",
+	Placeholder = "Enter Player Names...",
+	Callback = function(text)
+		targetPlayerNames = {}
+		if text then
+			for name in string.gmatch(text, "[^,]+") do
+				local cleaned = name:match("^%s*(.-)%s*$")
+				if cleaned and cleaned ~= "" then
+					table.insert(targetPlayerNames, cleaned)
+				end
+			end
+		end
+	end
+})
+
+MainTab:Space()
+
+MainTab:Button({
+	Title = "Teleport Once",
+	Desc = "Teleports & spins fast around target(s), then teleports back",
+	Justify = "Center",
+	Callback = function()
+		executeTeleportOnce()
+	end
+})
+
+MainTab:Space()
+
+MainTab:Toggle({
+	Title = "Loop Teleport Targets",
+	Desc = "Continuously teleports & spins fast around target(s)",
+	Value = false,
+	Callback = function(state)
+		loopTeleporting = state
+		if loopTeleporting then
+			task.spawn(function()
+				while loopTeleporting do
+					local targets = getTargetPlayers()
+					if #targets == 0 then
+						task.wait(0.5)
+					else
+						for _, target in ipairs(targets) do
+							if not loopTeleporting then break end
+							local tickStart = os.clock()
+							while loopTeleporting and (os.clock() - tickStart < 0.5) do
+								local character = player.Character
+								local root = character and character:FindFirstChild("HumanoidRootPart")
+								local targetCharacter = target.Character
+								local targetRoot = targetCharacter and targetCharacter:FindFirstChild("HumanoidRootPart")
+
+								if not root or not targetRoot or not target.Parent then break end
+
+								spinAngle = spinAngle + math.rad(180)
+								pcall(function()
+									root.Velocity = Vector3.new(0, 0, 0)
+									root.CFrame = targetRoot.CFrame * CFrame.new(3, 0, 0) * CFrame.Angles(0, spinAngle, 0)
+								end)
+								task.wait(RETURN_TIME)
+							end
+						end
+					end
+					task.wait(RETURN_TIME)
+				end
+			end)
+		end
+	end
+})
+
+MainTab:Space()
+
+MainTab:Toggle({
+	Title = "Teleport All",
+	Desc = "Cycles through and fast-spins around ALL server players",
+	Value = false,
+	Callback = function(state)
+		teleportAllActive = state
+		if teleportAllActive then
+			task.spawn(function()
+				while teleportAllActive do
+					local otherPlayers = {}
+					for _, p in ipairs(Players:GetPlayers()) do
+						if p ~= player then
+							table.insert(otherPlayers, p)
+						end
+					end
+
+					if #otherPlayers == 0 then
+						task.wait(1)
+					else
+						for _, target in ipairs(otherPlayers) do
+							if not teleportAllActive then break end
+							local tickStart = os.clock()
+							while teleportAllActive and (os.clock() - tickStart < 0.5) do
+								local activeChar = player.Character
+								local activeRoot = activeChar and activeChar:FindFirstChild("HumanoidRootPart")
+								local targetChar = target.Character
+								local targetRoot = targetChar and targetChar:FindFirstChild("HumanoidRootPart")
+
+								if not activeRoot or not targetRoot or not target.Parent then break end
+
+								spinAngle = spinAngle + math.rad(180)
+								pcall(function()
+									activeRoot.Velocity = Vector3.new(0, 0, 0)
+									activeRoot.CFrame = targetRoot.CFrame * CFrame.new(3, 0, 0) * CFrame.Angles(0, spinAngle, 0)
+								end)
+								task.wait(RETURN_TIME)
+							end
+						end
+					end
+					task.wait(RETURN_TIME)
+				end
+			end)
+		end
+	end
+})
+
+--// Positioning Tab Elements
+PositionTab:Toggle({
+	Title = "Teleport Down Under",
+	Desc = "ON = Teleport Once uses Underground mode | OFF = Uses Main Operations",
+	Value = false,
+	Callback = function(state)
+		teleportDownUnderActive = state
+	end
+})
+
+PositionTab:Space()
+
+PositionTab:Toggle({
+	Title = "Teleport Under All",
+	Desc = "Continuously cycles through and fast-spins underneath ALL server players",
+	Value = false,
+	Callback = function(state)
+		teleportUnderAllActive = state
+		if teleportUnderAllActive then
+			task.spawn(function()
+				while teleportUnderAllActive do
+					local otherPlayers = {}
+					for _, p in ipairs(Players:GetPlayers()) do
+						if p ~= player then
+							table.insert(otherPlayers, p)
+						end
+					end
+
+					if #otherPlayers == 0 then
+						task.wait(1)
+					else
+						for _, target in ipairs(otherPlayers) do
+							if not teleportUnderAllActive then break end
+							local tickStart = os.clock()
+							while teleportUnderAllActive and (os.clock() - tickStart < 0.5) do
+								local activeChar = player.Character
+								local activeRoot = activeChar and activeChar:FindFirstChild("HumanoidRootPart")
+								local targetChar = target.Character
+								local targetRoot = targetChar and targetChar:FindFirstChild("HumanoidRootPart")
+
+								if not activeRoot or not targetRoot or not target.Parent then break end
+
+								spinAngle = spinAngle + math.rad(180)
+								pcall(function()
+									activeRoot.Velocity = Vector3.new(0, 0, 0)
+									activeRoot.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+									activeRoot.CFrame = targetRoot.CFrame * CFrame.new(0, -4, 0) * CFrame.Angles(math.rad(90), 0, spinAngle)
+								end)
+								task.wait(RETURN_TIME)
+							end
+						end
+					end
+					task.wait(RETURN_TIME)
+				end
+			end)
+		end
+	end
+})
+
+PositionTab:Space()
+
+PositionTab:Toggle({
+	Title = "Teleport Under Toggle",
+	Desc = "Continuously keeps you underneath your specific target player spinning fast",
+	Value = false,
+	Callback = function(state)
+		teleportUnderToggleActive = state
+		if teleportUnderToggleActive then
+			task.spawn(function()
+				while teleportUnderToggleActive do
+					local targets = getTargetPlayers()
+					if #targets == 0 then
+						task.wait(0.5)
+					else
+						for _, target in ipairs(targets) do
+							if not teleportUnderToggleActive then break end
+							local character = player.Character
+							local root = character and character:FindFirstChild("HumanoidRootPart")
+							local targetCharacter = target.Character
+							local targetRoot = targetCharacter and targetCharacter:FindFirstChild("HumanoidRootPart")
+
+							if root and targetRoot and target.Parent then
+								spinAngle = spinAngle + math.rad(180)
+								pcall(function()
+									root.Velocity = Vector3.new(0, 0, 0)
+									root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+									root.CFrame = targetRoot.CFrame * CFrame.new(0, -4, 0) * CFrame.Angles(math.rad(90), 0, spinAngle)
+								end)
+							end
+							task.wait(0.01)
+						end
+					end
+					task.wait(0.01)
+				end
+			end)
+		end
+	end
+})
+
+PositionTab:Space()
+
+PositionTab:Button({
+	Title = "Teleport Under Once",
+	Desc = "Noclips for 1s, teleports underneath target(s) spinning fast up, then returns back",
+	Justify = "Center",
+	Callback = function()
+		executeTeleportDownOnce()
+	end
+})
+
+--// Closer Player Tab Elements
+CloserPlayerTab:Toggle({
+	Title = "Closer Player",
+	Desc = "Automatically targets the nearest player to your character",
+	Value = false,
+	Callback = function(state)
+		closerPlayerActive = state
+		if closerPlayerActive then
+			closestPlayer = getClosestPlayer()
+			if closestPlayer then
+				notify("Closer Player", "Locked onto: " .. closestPlayer.Name)
+			else
+				notify("Closer Player", "Enabled (waiting for nearby player)")
+			end
+		else
+			closestPlayer = nil
+			notify("Closer Player", "Disabled")
+		end
+	end
+})
+
+CloserPlayerTab:Space()
+
+CloserPlayerTab:Button({
+	Title = "Teleport Once",
+	Desc = "Teleports once onto the closer player (when enabled) or current targets",
+	Justify = "Center",
+	Callback = function()
+		if closerPlayerActive then
+			closestPlayer = getClosestPlayer()
+			if not closestPlayer then
+				notify("Closer Player", "No closer player found")
+				return
+			end
+		end
+		executeTeleportOnce()
+	end
+})
+
+--// Settings Tab Elements
+SettingsTab:Input({
+	Title = "Tool / Auto Name",
+	Desc = "Tool name to equip & auto-click",
+	Value = "Sword",
+	Callback = function(text)
+		if text then toolNameInput = text end
+	end
+})
+
+SettingsTab:Space()
+
+SettingsTab:Input({
+	Title = "Quick-Bind Key",
+	Desc = "Enter key code name (e.g. Tab, T, E, Q)",
+	Value = "Tab",
+	Callback = function(text)
+		if text and #text > 0 then
+			local cleanedText = text:match("^%s*(.-)%s*$")
+			local success, keyCode = pcall(function()
+				return Enum.KeyCode[cleanedText]
+			end)
+			if success and keyCode then
+				teleportKey = keyCode
+				notify("TeleKill", "Quick-bind set to: " .. cleanedText)
+			end
+		end
+	end
+})
+
+SettingsTab:Space()
+
+SettingsTab:Input({
+	Title = "UI Toggle Key",
+	Desc = "Enter key to hide/minimize UI (e.g. RightShift, LeftShift, Insert, K)",
+	Value = "RightShift",
+	Callback = function(text)
+		if text and #text > 0 then
+			local cleanedText = text:match("^%s*(.-)%s*$")
+			local success, keyCode = pcall(function()
+				return Enum.KeyCode[cleanedText]
+			end)
+			if success and keyCode then
+				uiToggleKey = keyCode
+				notify("TeleKill", "UI Toggle Key set to: " .. cleanedText)
+			end
+		end
+	end
+})
+
+SettingsTab:Space()
+
+SettingsTab:Toggle({
+	Title = "Auto Clicker",
+	Desc = "Automatically equips and activates the tool",
+	Value = false,
+	Callback = function(state)
+		autoClickActive = state
+		if autoClickActive then
+			task.spawn(function()
+				while autoClickActive do
+					local inputName = toolNameInput:lower():match("^%s*(.-)%s*$")
+					if inputName and inputName ~= "" then
+						local character = player.Character
+						local backpack = player:FindFirstChildOfClass("Backpack")
+
+						if character then
+							local equippedTool = nil
+							for _, item in ipairs(character:GetChildren()) do
+								if item:IsA("Tool") and item.Name:lower() == inputName then
+									equippedTool = item
+									break
+								end
+							end
+
+							if not equippedTool and backpack then
+								for _, item in ipairs(backpack:GetChildren()) do
+									if item:IsA("Tool") and item.Name:lower() == inputName then
+										item.Parent = character
+										equippedTool = item
+										break
+									end
+								end
+							end
+
+							if equippedTool then
+								pcall(function()
+									equippedTool:Activate()
+									VirtualUser:Button1Down(Vector2.new(0, 0))
+									task.wait(0.01)
+									VirtualUser:Button1Up(Vector2.new(0, 0))
+								end)
+							end
+						end
+					end
+					task.wait(0.05)
+				end
+			end)
+		end
+	end
+})
+
+--// Setting Tab Elements (Re-Execute & Color)
+SettingTab:Button({
+	Title = "Re-Execute",
+	Desc = "Stops active loops, destroys UI, and re-runs script from SCRIPT_URL or cached source",
+	Justify = "Center",
+	Callback = function()
+		reExecuteScript()
+	end
+})
+
+SettingTab:Space()
+
+SettingTab:Dropdown({
+	Title = "Theme",
+	Desc = "Select WindUI theme preset",
+	Values = { "Dark", "Midnight", "Crimson", "Emerald", "Amber" },
+	Value = selectedTheme,
+	Callback = function(option)
+		selectedTheme = option
+		applyThemeAndColor(selectedTheme, selectedHexColor)
+		notify("Setting", "Theme set to: " .. tostring(option))
+	end
+})
+
+SettingTab:Space()
+
+SettingTab:Input({
+	Title = "Color (Hex)",
+	Desc = "Enter hex color (e.g. #30FF6A, #FF3B30, #FFD60A)",
+	Value = selectedHexColor,
+	Callback = function(text)
+		if text then
+			selectedHexColor = text
+			local parsed = hexToColor3(text)
+			if parsed then
+				applyThemeAndColor(selectedTheme, selectedHexColor)
+				notify("Setting", "Color updated: " .. text)
+			end
+		end
+	end
+})
+
+--// Keyboard Listeners (Quick-Bind & UI Toggle Hide/Minimize)
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+	if input.UserInputType == Enum.UserInputType.Keyboard then
+		if not gameProcessed and input.KeyCode == teleportKey then
+			executeTeleportOnce()
+		end
+
+		if input.KeyCode == uiToggleKey then
+			pcall(function()
+				Window:Toggle()
+			end)
+		end
+	end
+end)
