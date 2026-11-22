@@ -1,8 +1,11 @@
+-- Tele Kill Hub, creating by Claude
+
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 local VirtualUser = game:GetService("VirtualUser")
 local RunService = game:GetService("RunService")
 local CoreGui = game:GetService("CoreGui")
+local HttpService = game:GetService("HttpService")
 
 local player = Players.LocalPlayer
 
@@ -72,6 +75,17 @@ local autoClickActive = false
 local spinAngle = 0
 local toolNameInput = "Sword"
 local flingOnTeleport = false -- ON = fling the target during Teleport Once, stops when teleported back
+local teamCheckEnabled = false -- ON = never target players on your Roblox team
+local teamNames = {} -- teammates you added by name (never targeted)
+local currentTeleportTarget = nil -- player we are currently teleported onto (any teleport mode)
+local lastTeleportTargetTime = 0
+local lastTeleportFire = 0
+local walkFlingActive = false
+local fakeLagActive = false
+local fakeLagTeleportOnClose = true
+local fakeLagHideBody = false -- ON = anyone you walk into gets flung, no teleport needed
+local flyHeadActive = false -- ON = your head stays locked onto the target's head
+local lastFlingStep = 0 -- time of our last own fling step (anti fling pauses while we fling)
 local fireOnTeleport = false -- ON = tool fires during Teleport Once, stops when teleported back
 local autoClickDelay = 0.05 -- seconds between clicks (small = fast, big = slow)
 
@@ -103,11 +117,13 @@ local function spawnLoop(fn)
 	end)
 end
 
---// Anti-AFK: prevents the idle kick so the script keeps running
+--// Anti-AFK: prevents the idle kick (can be switched in the Anti tab)
+local antiAfkEnabled = true
 if not env._TELEKILL_ANTIAFK then
 	env._TELEKILL_ANTIAFK = true
 	pcall(function()
 		player.Idled:Connect(function()
+			if not antiAfkEnabled then return end
 			VirtualUser:CaptureController()
 			VirtualUser:ClickButton2(Vector2.new())
 		end)
@@ -170,6 +186,22 @@ local function findSinglePlayer(text)
 	return prefixMatch or containsMatch
 end
 
+--// Helper: is this player a teammate we should never target?
+local function isProtected(target)
+	if teamCheckEnabled and player.Team ~= nil and target.Team == player.Team then
+		return true
+	end
+	local username = target.Name:lower()
+	local displayName = target.DisplayName:lower()
+	for _, n in ipairs(teamNames) do
+		local name = n:lower()
+		if username == name or displayName == name then
+			return true
+		end
+	end
+	return false
+end
+
 --// Helper: Resolve typed Target Players names into actual players
 local function resolveNamedPlayers()
 	local list = {}
@@ -198,8 +230,9 @@ local function getClosestPlayer()
 		candidates = resolveNamedPlayers()
 	end
 
+	local usingNames = #targetPlayerNames > 0
 	for _, target in ipairs(candidates) do
-		if target ~= player then
+		if target ~= player and (usingNames or not isProtected(target)) then
 			local targetRoot = getCharacterRoot(target.Character)
 			if targetRoot then
 				local dist = (targetRoot.Position - myRoot.Position).Magnitude
@@ -472,7 +505,69 @@ local function setFly(state)
 	end)
 end
 
+--// Anti Fling: other players can't push you, and crazy spin/velocity on you gets cancelled
+local antiFlingActive, antiFlingConn = false, nil
+local antiFlingBackup = {}
+
+local function restoreAntiFlingCollisions()
+	for part in pairs(antiFlingBackup) do
+		antiFlingBackup[part] = nil
+		pcall(function()
+			if part.Parent then
+				part.CanCollide = true
+			end
+		end)
+	end
+end
+
+local function setAntiFling(state)
+	antiFlingActive = state
+	if antiFlingConn then
+		antiFlingConn:Disconnect()
+		antiFlingConn = nil
+	end
+	if not state then
+		restoreAntiFlingCollisions()
+		return
+	end
+
+	antiFlingConn = RunService.Stepped:Connect(function()
+		-- pause while WE are flinging someone (needs collision)
+		if os.clock() - lastFlingStep < 0.5 then
+			restoreAntiFlingCollisions()
+			return
+		end
+
+		-- 1) no collision with other players' bodies
+		for _, other in ipairs(Players:GetPlayers()) do
+			if other ~= player and other.Character then
+				for _, part in ipairs(other.Character:GetDescendants()) do
+					if part:IsA("BasePart") and part.CanCollide then
+						antiFlingBackup[part] = true
+						part.CanCollide = false
+					end
+				end
+			end
+		end
+
+		-- 2) cancel crazy velocity / spin on yourself
+		local root = getCharacterRoot(player.Character)
+		if root and not flyActive then
+			local lin = root.AssemblyLinearVelocity
+			local ang = root.AssemblyAngularVelocity
+			local limit = math.max(300, speedValue * 2)
+			local horizontal = Vector3.new(lin.X, 0, lin.Z).Magnitude
+
+			if ang.Magnitude > 100 or horizontal > limit or math.abs(lin.Y) > 500 then
+				root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+				root.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+			end
+		end
+	end)
+end
+
 local function resetPlayerMods()
+	setAntiFling(false)
 	setSpeed(false)
 	setJump(false)
 	setInfJump(false)
@@ -490,6 +585,11 @@ do
 		local anyLoop = loopTeleporting or teleportAllActive or teleportUnderAllActive
 			or teleportUnderToggleActive or closerPlayerActive
 
+		-- Don't fight the Fling code: it needs CanCollide = true for a moment to throw the target
+		if os.clock() - lastFlingStep < 0.5 then
+			return
+		end
+
 		if anyLoop then
 			wasActive = true
 			local c = player.Character
@@ -503,6 +603,314 @@ do
 			end
 		end
 	end)
+end
+
+--// Called by every teleport loop: remembers who we are on, and fires the tool at them if enabled
+local function teleportFireStep(target)
+	currentTeleportTarget = target
+	lastTeleportTargetTime = os.clock()
+	if fireOnTeleport and os.clock() - lastTeleportFire >= autoClickDelay then
+		lastTeleportFire = os.clock()
+		fireToolOnce({ target })
+	end
+end
+
+--// Fly the Head: keep your head locked onto the target's head (follows them around)
+local flyHeadToken = 0
+
+local function setFlyHead(state)
+	flyHeadActive = state
+	flyHeadToken += 1
+	local myToken = flyHeadToken
+	if not state then
+		restoreCollision()
+		return
+	end
+
+	spawnLoop(function()
+		while flyHeadActive and myToken == flyHeadToken do
+			local character = player.Character
+			local root = getCharacterRoot(character)
+			local targets = getTargetPlayers()
+			local target = targets[1]
+			local targetHead = target and target.Character and target.Character:FindFirstChild("Head")
+
+			if root and targetHead and character then
+				if flingOnTeleport then
+					-- Fling mode: ram into the target's head instead of just following it
+					pcall(function()
+						root.CanCollide = true
+						lastFlingStep = os.clock()
+						root.CFrame = targetHead.CFrame
+						root.AssemblyAngularVelocity = Vector3.new(0, 30000, 0)
+						root.AssemblyLinearVelocity = Vector3.new(15000, 15000, 15000)
+					end)
+				else
+					noclipCharacter(character) -- stops you getting stuck on walls/floor while following
+					pcall(function()
+						root.CFrame = targetHead.CFrame
+						root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+					end)
+				end
+				task.wait(RETURN_TIME)
+			else
+				-- no target yet: don't spin a tight empty loop, check again shortly
+				task.wait(0.3)
+			end
+		end
+	end)
+end
+
+--// Walk Fling: fling anyone you bump into while just walking around (no teleport)
+local function setWalkFling(state)
+	walkFlingActive = state
+	if not state then return end
+
+	spawnLoop(function()
+		local cooldowns = {}
+
+		while walkFlingActive do
+			local character = player.Character
+			local root = getCharacterRoot(character)
+
+			if root then
+				for _, other in ipairs(Players:GetPlayers()) do
+					if other ~= player and not isProtected(other) then
+						local otherRoot = getCharacterRoot(other.Character)
+						local now = os.clock()
+
+						if otherRoot and (otherRoot.Position - root.Position).Magnitude <= 7
+							and (not cooldowns[other] or now - cooldowns[other] >= 0.6) then
+							cooldowns[other] = now
+
+							-- Short burst: ram into them, then snap yourself back so YOU don't get flung too
+							local savedCFrame = root.CFrame
+							local burstEnd = os.clock() + 0.15
+
+							while walkFlingActive and os.clock() < burstEnd do
+								local r = getCharacterRoot(player.Character)
+								local tr = getCharacterRoot(other.Character)
+								if not r or not tr or not other.Parent then break end
+
+								pcall(function()
+									r.CanCollide = true
+									lastFlingStep = os.clock()
+									r.CFrame = tr.CFrame
+									r.AssemblyAngularVelocity = Vector3.new(0, 30000, 0)
+									r.AssemblyLinearVelocity = Vector3.new(15000, 15000, 15000)
+								end)
+								task.wait(RETURN_TIME)
+							end
+
+							-- Snap back to where you were standing and stop your own velocity
+							pcall(function()
+								local r = getCharacterRoot(player.Character)
+								if r then
+									r.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+									r.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+									r.CFrame = savedCFrame
+								end
+							end)
+						end
+					end
+				end
+			end
+			task.wait(RETURN_TIME)
+		end
+	end)
+end
+
+--// Fake Lag (Ghost Clone): freeze your real body in place while you control a
+--// fake clone that actually moves, so other players see you standing still/lagging.
+local FakeLagControls = nil
+pcall(function()
+	local PlayerModule = require(player:WaitForChild("PlayerScripts"):WaitForChild("PlayerModule"))
+	FakeLagControls = PlayerModule:GetControls()
+end)
+
+local fakeLagRealChar, fakeLagClone, fakeLagOriginalCF = nil, nil, nil
+local fakeLagConns = {}
+local fakeLagAnims = {}
+
+local FAKELAG_ANIM_IDS = {
+	Idle = "rbxassetid://507766388",
+	Run  = "rbxassetid://507767714",
+	Jump = "rbxassetid://507765000",
+	Fall = "rbxassetid://507767968",
+}
+
+local function fakeLagLoadAnim(hum, id)
+	local a = Instance.new("Animation")
+	a.AnimationId = id
+	local ok, track = pcall(function() return hum:LoadAnimation(a) end)
+	return ok and track or nil
+end
+
+local function fakeLagStopAllAnims()
+	for _, track in pairs(fakeLagAnims) do
+		if track and track.IsPlaying then
+			pcall(function() track:Stop(0.1) end)
+		end
+	end
+end
+
+local function setFakeLag(state)
+	if state == fakeLagActive then return end
+
+	if not state then
+		fakeLagActive = false
+		for _, conn in ipairs(fakeLagConns) do
+			pcall(function() conn:Disconnect() end)
+		end
+		fakeLagConns = {}
+		fakeLagStopAllAnims()
+		fakeLagAnims = {}
+
+		if fakeLagClone then
+			local lastCF
+			pcall(function() lastCF = fakeLagClone:GetPrimaryPartCFrame() end)
+			pcall(function() fakeLagClone:Destroy() end)
+			fakeLagClone = nil
+
+			local rc = fakeLagRealChar
+			local root = rc and rc:FindFirstChild("HumanoidRootPart")
+			if root then
+				root.Anchored = false
+				if fakeLagTeleportOnClose and lastCF then
+					root.CFrame = lastCF
+				elseif fakeLagOriginalCF then
+					root.CFrame = fakeLagOriginalCF
+				end
+			end
+			pcall(function()
+				workspace.CurrentCamera.CameraSubject = rc and rc:FindFirstChildOfClass("Humanoid")
+			end)
+		end
+		return
+	end
+
+	-- Turning ON
+	local realChar = player.Character
+	local root = realChar and realChar:FindFirstChild("HumanoidRootPart")
+	if not root then
+		notify("Fake Lag", "Character not ready")
+		return
+	end
+
+	fakeLagActive = true
+	fakeLagRealChar = realChar
+	fakeLagOriginalCF = root.CFrame
+
+	local ok, clone = pcall(function()
+		realChar.Archivable = true
+		return realChar:Clone()
+	end)
+	if not ok or not clone then
+		fakeLagActive = false
+		notify("Fake Lag", "Could not create clone")
+		return
+	end
+	clone.Name = "TeleKillFakeLagClone"
+	clone.Parent = workspace
+	fakeLagClone = clone
+
+	if fakeLagHideBody then
+		root.CFrame = fakeLagOriginalCF + Vector3.new(0, 5000, 0)
+	end
+	root.Anchored = true
+
+	for _, v in ipairs(clone:GetDescendants()) do
+		if v:IsA("LocalScript") or v:IsA("Script") then
+			pcall(function() v:Destroy() end)
+		elseif v:IsA("BasePart") then
+			v.Anchored = false
+			v.CanCollide = (v.Name == "HumanoidRootPart")
+			if v.Name == "HumanoidRootPart" then
+				v.Transparency = 1
+			end
+		end
+	end
+
+	local cloneHum = clone:FindFirstChildOfClass("Humanoid")
+	local cloneRoot = clone:FindFirstChild("HumanoidRootPart")
+	if not cloneHum or not cloneRoot then
+		pcall(function() clone:Destroy() end)
+		fakeLagClone = nil
+		fakeLagActive = false
+		root.Anchored = false
+		notify("Fake Lag", "Clone is missing parts")
+		return
+	end
+
+	fakeLagAnims.Idle = fakeLagLoadAnim(cloneHum, FAKELAG_ANIM_IDS.Idle)
+	fakeLagAnims.Run  = fakeLagLoadAnim(cloneHum, FAKELAG_ANIM_IDS.Run)
+	fakeLagAnims.Jump = fakeLagLoadAnim(cloneHum, FAKELAG_ANIM_IDS.Jump)
+	fakeLagAnims.Fall = fakeLagLoadAnim(cloneHum, FAKELAG_ANIM_IDS.Fall)
+
+	pcall(function() workspace.CurrentCamera.CameraSubject = cloneHum end)
+	if fakeLagAnims.Idle then fakeLagAnims.Idle:Play() end
+
+	table.insert(fakeLagConns, cloneHum.StateChanged:Connect(function(_, newState)
+		if newState == Enum.HumanoidStateType.Jumping then
+			fakeLagStopAllAnims()
+			if fakeLagAnims.Jump then fakeLagAnims.Jump:Play() end
+		elseif newState == Enum.HumanoidStateType.Freefall then
+			fakeLagStopAllAnims()
+			if fakeLagAnims.Fall then fakeLagAnims.Fall:Play() end
+		elseif newState == Enum.HumanoidStateType.Landed then
+			fakeLagStopAllAnims()
+			if fakeLagAnims.Idle then fakeLagAnims.Idle:Play() end
+		end
+	end))
+
+	table.insert(fakeLagConns, RunService.RenderStepped:Connect(function()
+		if not fakeLagActive or not cloneHum or not cloneRoot or not cloneRoot.Parent then return end
+
+		local cam = workspace.CurrentCamera
+		if not cam then return end
+
+		cloneHum.WalkSpeed = speedEnabled and speedValue or 16
+
+		local inputVector = Vector3.new(0, 0, 0)
+		if FakeLagControls then
+			local ok2, mv = pcall(function() return FakeLagControls:GetMoveVector() end)
+			if ok2 and mv then inputVector = mv end
+		end
+		if inputVector.Magnitude == 0 then
+			if UserInputService:IsKeyDown(Enum.KeyCode.W) then inputVector += Vector3.new(0, 0, -1) end
+			if UserInputService:IsKeyDown(Enum.KeyCode.S) then inputVector += Vector3.new(0, 0, 1) end
+			if UserInputService:IsKeyDown(Enum.KeyCode.A) then inputVector += Vector3.new(-1, 0, 0) end
+			if UserInputService:IsKeyDown(Enum.KeyCode.D) then inputVector += Vector3.new(1, 0, 0) end
+		end
+
+		local finalDir = (cam.CFrame.RightVector * inputVector.X) + (cam.CFrame.LookVector * -inputVector.Z)
+		finalDir = Vector3.new(finalDir.X, 0, finalDir.Z)
+
+		local isGrounded = cloneHum:GetState() == Enum.HumanoidStateType.Running
+			or cloneHum:GetState() == Enum.HumanoidStateType.RunningNoPhysics
+
+		if finalDir.Magnitude > 0 then
+			cloneHum:Move(finalDir.Unit, false)
+			if isGrounded and fakeLagAnims.Run and not fakeLagAnims.Run.IsPlaying then
+				fakeLagStopAllAnims()
+				fakeLagAnims.Run:Play(0.1)
+			end
+		else
+			cloneHum:Move(Vector3.new(0, 0, 0), false)
+			if isGrounded and fakeLagAnims.Idle and not fakeLagAnims.Idle.IsPlaying then
+				fakeLagStopAllAnims()
+				fakeLagAnims.Idle:Play(0.1)
+			end
+		end
+	end))
+
+	table.insert(fakeLagConns, UserInputService.JumpRequest:Connect(function()
+		if fakeLagActive and cloneHum and cloneHum:GetState() ~= Enum.HumanoidStateType.Freefall then
+			cloneHum.UseJumpPower = true
+			cloneHum.JumpPower = jumpEnabled and jumpValue or 50
+			cloneHum.Jump = true
+		end
+	end))
 end
 
 --// Core Action: Perform Teleport Down Once (With 1-Second Noclip)
@@ -551,6 +959,7 @@ local function executeTeleportDownOnce(forceCloser, forceFling)
 						pcall(function()
 							activeRoot.CanCollide = true
 							activeRoot.CFrame = targetRoot.CFrame
+							lastFlingStep = os.clock()
 							activeRoot.AssemblyAngularVelocity = Vector3.new(0, 30000, 0)
 							activeRoot.AssemblyLinearVelocity = Vector3.new(15000, 15000, 15000)
 						end)
@@ -626,6 +1035,7 @@ local function executeTeleportOnce(forceCloser, forceFling)
 						pcall(function()
 							activeRoot.CanCollide = true
 							activeRoot.CFrame = targetRoot.CFrame
+							lastFlingStep = os.clock()
 							activeRoot.AssemblyAngularVelocity = Vector3.new(0, 30000, 0)
 							activeRoot.AssemblyLinearVelocity = Vector3.new(15000, 15000, 15000)
 						end)
@@ -871,6 +1281,10 @@ local function stopAllLoops()
 	autoClickActive = false
 	setNoclip(false)
 	resetPlayerMods()
+	setFlyHead(false)
+	walkFlingActive = false
+	setFakeLag(false)
+	setAntiFling(false)
 	rainbowActive = false
 	espEnabled = false
 	closerPlayerActive = false
@@ -902,21 +1316,186 @@ local function startCloserLoop()
 
 				local targetRoot = locked and getCharacterRoot(locked.Character)
 				if targetRoot then
+					teleportFireStep(locked)
 					spinAngle += math.rad(180)
-					pcall(function()
-						root.Velocity = Vector3.new(0, 0, 0)
-						root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
 
-						if teleportDownUnderActive then
-							root.CFrame = targetRoot.CFrame * CFrame.new(0, -4, 0) * CFrame.Angles(math.rad(90), 0, spinAngle)
-						else
-							root.CFrame = targetRoot.CFrame * CFrame.new(closerPlayerActive and CLOSER_DISTANCE or 3, 0, 0) * CFrame.Angles(0, spinAngle, 0)
-						end
-					end)
+					if flingOnTeleport then
+						pcall(function()
+							root.CanCollide = true
+							lastFlingStep = os.clock()
+							root.CFrame = targetRoot.CFrame
+							root.AssemblyAngularVelocity = Vector3.new(0, 30000, 0)
+							root.AssemblyLinearVelocity = Vector3.new(15000, 15000, 15000)
+						end)
+					else
+						pcall(function()
+							root.Velocity = Vector3.new(0, 0, 0)
+							root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+
+							if teleportDownUnderActive then
+								root.CFrame = targetRoot.CFrame * CFrame.new(0, -4, 0) * CFrame.Angles(math.rad(90), 0, spinAngle)
+							else
+								root.CFrame = targetRoot.CFrame * CFrame.new(closerPlayerActive and CLOSER_DISTANCE or 3, 0, 0) * CFrame.Angles(0, spinAngle, 0)
+							end
+						end)
+					end
 				end
 
 				task.wait(RETURN_TIME)
 			end
+		end
+	end)
+end
+
+--// Config save / load (needs executor file functions: writefile, readfile, listfiles...)
+local CONFIG_ROOT = "TeleKillHub"
+local CONFIG_FOLDER = "TeleKillHub/configs"
+
+local function filesAvailable()
+	return typeof(writefile) == "function" and typeof(readfile) == "function"
+end
+
+local function ensureConfigFolder()
+	pcall(function()
+		if typeof(makefolder) == "function" then
+			if typeof(isfolder) ~= "function" or not isfolder(CONFIG_ROOT) then
+				makefolder(CONFIG_ROOT)
+			end
+			if typeof(isfolder) ~= "function" or not isfolder(CONFIG_FOLDER) then
+				makefolder(CONFIG_FOLDER)
+			end
+		end
+	end)
+end
+
+local function cleanConfigName(name)
+	name = tostring(name or ""):gsub("[^%w _%-]", ""):match("^%s*(.-)%s*$")
+	return name
+end
+
+local function listConfigs()
+	local names = {}
+	pcall(function()
+		if typeof(listfiles) == "function" then
+			for _, path in ipairs(listfiles(CONFIG_FOLDER)) do
+				local n = tostring(path):match("([^/\\]+)%.json$")
+				if n then
+					table.insert(names, n)
+				end
+			end
+		end
+	end)
+	table.sort(names)
+	return names
+end
+
+local AUTOLOAD_FILE = "TeleKillHub/autoload.txt"
+
+local function getAutoLoad()
+	local name
+	pcall(function()
+		if typeof(readfile) == "function" and typeof(isfile) == "function" and isfile(AUTOLOAD_FILE) then
+			name = cleanConfigName(readfile(AUTOLOAD_FILE))
+		end
+	end)
+	if name == "" then name = nil end
+	return name
+end
+
+local function setAutoLoad(name)
+	ensureConfigFolder()
+	return pcall(function()
+		writefile(AUTOLOAD_FILE, name or "")
+	end)
+end
+
+local function collectSettings()
+	return {
+		targetPlayerNames = targetPlayerNames,
+		teleportAllSeconds = teleportAllSeconds,
+		autoClickDelay = autoClickDelay,
+		toolNameInput = toolNameInput,
+		teleportKey = teleportKey.Name,
+		uiToggleKey = uiToggleKey.Name,
+		selectedTheme = selectedTheme,
+		selectedHexColor = selectedHexColor,
+		teleportDownUnderActive = teleportDownUnderActive,
+		fireOnTeleport = fireOnTeleport,
+		flingOnTeleport = flingOnTeleport,
+		notificationsEnabled = notificationsEnabled,
+		espNames = espNames,
+		espDistance = espDistance,
+		espRainbow = espRainbow,
+		espColor = espColor:ToHex(),
+		espTextSize = espTextSize,
+		speedValue = speedValue,
+		jumpValue = jumpValue,
+		flySpeed = flySpeed,
+		antiAfkEnabled = antiAfkEnabled,
+		teamCheckEnabled = teamCheckEnabled,
+		teamNames = teamNames,
+	}
+end
+
+local function applySettings(t)
+	if type(t) ~= "table" then return end
+
+	if type(t.targetPlayerNames) == "table" then targetPlayerNames = t.targetPlayerNames end
+	if tonumber(t.teleportAllSeconds) then teleportAllSeconds = clampSeconds(t.teleportAllSeconds) end
+	if tonumber(t.autoClickDelay) then autoClickDelay = math.clamp(t.autoClickDelay, 0.05, 5) end
+	if type(t.toolNameInput) == "string" then toolNameInput = t.toolNameInput end
+	if type(t.teleportKey) == "string" and Enum.KeyCode[t.teleportKey] then teleportKey = Enum.KeyCode[t.teleportKey] end
+	if type(t.uiToggleKey) == "string" and Enum.KeyCode[t.uiToggleKey] then uiToggleKey = Enum.KeyCode[t.uiToggleKey] end
+	if type(t.selectedTheme) == "string" then selectedTheme = t.selectedTheme end
+	if type(t.selectedHexColor) == "string" then selectedHexColor = t.selectedHexColor end
+	if type(t.teleportDownUnderActive) == "boolean" then teleportDownUnderActive = t.teleportDownUnderActive end
+	if type(t.fireOnTeleport) == "boolean" then fireOnTeleport = t.fireOnTeleport end
+	if type(t.flingOnTeleport) == "boolean" then flingOnTeleport = t.flingOnTeleport end
+	if type(t.notificationsEnabled) == "boolean" then notificationsEnabled = t.notificationsEnabled end
+	if type(t.espNames) == "boolean" then espNames = t.espNames end
+	if type(t.espDistance) == "boolean" then espDistance = t.espDistance end
+	if type(t.espRainbow) == "boolean" then espRainbow = t.espRainbow end
+	if type(t.espColor) == "string" then
+		local ok, col = pcall(function() return Color3.fromHex(t.espColor) end)
+		if ok and col then espColor = col end
+	end
+	if tonumber(t.espTextSize) then espTextSize = math.clamp(t.espTextSize, 8, 40) end
+	if tonumber(t.speedValue) then speedValue = math.clamp(t.speedValue, 16, 300) end
+	if tonumber(t.jumpValue) then jumpValue = math.clamp(t.jumpValue, 50, 500) end
+	if tonumber(t.flySpeed) then flySpeed = math.clamp(t.flySpeed, 10, 300) end
+	if type(t.antiAfkEnabled) == "boolean" then antiAfkEnabled = t.antiAfkEnabled end
+	if type(t.teamCheckEnabled) == "boolean" then teamCheckEnabled = t.teamCheckEnabled end
+	if type(t.teamNames) == "table" then teamNames = t.teamNames end
+end
+
+--// Chat command: shows/hides the UI
+--// NOTE: "/e" is Roblox's built-in emote command and swallows the message before
+--// it ever reaches Chatted/SendingMessage, so that prefix can never work here.
+--// Using "/tk" (and ";tk" in case your game also claims "/") instead.
+if not env._TELEKILL_CHATCMD then
+	env._TELEKILL_CHATCMD = true
+
+	local function handleToggleCommand(msg)
+		msg = tostring(msg or ""):match("^%s*(.-)%s*$"):lower()
+		if msg == "/c" or msg == "/c telekill" or msg == "/c tkl"
+			or msg == "/tk" or msg == ";tk" or msg == ";telekill" or msg == ";tkl" then
+			pcall(function()
+				if env._TELEKILL_WINDOW then
+					env._TELEKILL_WINDOW:Toggle()
+				end
+			end)
+		end
+	end
+
+	pcall(function()
+		player.Chatted:Connect(handleToggleCommand)
+	end)
+	pcall(function()
+		local TextChatService = game:GetService("TextChatService")
+		if TextChatService.ChatInputBarConfiguration then
+			TextChatService.SendingMessage:Connect(function(message)
+				handleToggleCommand(message.Text)
+			end)
 		end
 	end)
 end
@@ -935,7 +1514,7 @@ local function buildUI()
 			Title = "Open TeleKill UI",
 			CornerRadius = UDim.new(1, 0),
 			StrokeThickness = 3,
-			Enabled = true,
+			Enabled = false, -- hidden on PC: reopen with the UI Toggle Key (RightShift) or "/e telekill"
 			Draggable = true,
 			OnlyMobile = false,
 			Scale = 0.5,
@@ -1012,6 +1591,12 @@ local function buildUI()
 		Border = true,
 	})
 
+	local FlyHeadTab = PositioningSection:Tab({
+		Title = "Fly the Head",
+		Icon = "solar:scooter-bold",
+		Border = true,
+	})
+
 	local SettingsTab = TelekillSection:Tab({
 		Title = "Configuration",
 		Icon = "solar:settings-bold",
@@ -1027,6 +1612,24 @@ local function buildUI()
 	local SettingTab = TelekillSection:Tab({
 		Title = "Setting",
 		Icon = "solar:palette-bold",
+		Border = true,
+	})
+
+	local TeamTab = TelekillSection:Tab({
+		Title = "Team",
+		Icon = "solar:users-group-rounded-bold",
+		Border = true,
+	})
+
+	local AntiTab = TelekillSection:Tab({
+		Title = "Anti",
+		Icon = "solar:shield-bold",
+		Border = true,
+	})
+
+	local ConfigTab = TelekillSection:Tab({
+		Title = "Configs",
+		Icon = "solar:diskette-bold",
 		Border = true,
 	})
 
@@ -1059,6 +1662,7 @@ local function buildUI()
 		Title = "Target Players",
 		Desc = "Optional: leave empty to auto-target the closer player. Separate multiple names with commas",
 		Placeholder = "Enter Player Names...",
+		Value = table.concat(targetPlayerNames, ", "),
 		Callback = function(text)
 			targetPlayerNames = {}
 			if text then
@@ -1124,6 +1728,8 @@ local function buildUI()
 
 									if not root or not targetRoot or not target.Parent then break end
 
+									teleportFireStep(target)
+
 									spinAngle = spinAngle + math.rad(180)
 									pcall(function()
 										root.Velocity = Vector3.new(0, 0, 0)
@@ -1153,7 +1759,7 @@ local function buildUI()
 					while teleportAllActive do
 						local otherPlayers = {}
 						for _, p in ipairs(Players:GetPlayers()) do
-							if p ~= player then
+							if p ~= player and not isProtected(p) then
 								table.insert(otherPlayers, p)
 							end
 						end
@@ -1170,6 +1776,8 @@ local function buildUI()
 									local targetRoot = getCharacterRoot(target.Character)
 
 									if not activeRoot or not targetRoot or not target.Parent then break end
+
+									teleportFireStep(target)
 
 									spinAngle = spinAngle + math.rad(180)
 									pcall(function()
@@ -1210,7 +1818,7 @@ local function buildUI()
 					while teleportUnderAllActive do
 						local otherPlayers = {}
 						for _, p in ipairs(Players:GetPlayers()) do
-							if p ~= player then
+							if p ~= player and not isProtected(p) then
 								table.insert(otherPlayers, p)
 							end
 						end
@@ -1227,6 +1835,8 @@ local function buildUI()
 									local targetRoot = getCharacterRoot(target.Character)
 
 									if not activeRoot or not targetRoot or not target.Parent then break end
+
+									teleportFireStep(target)
 
 									spinAngle = spinAngle + math.rad(180)
 									pcall(function()
@@ -1269,6 +1879,8 @@ local function buildUI()
 									local targetRoot = getCharacterRoot(target.Character)
 
 									if not root or not targetRoot or not target.Parent then break end
+
+									teleportFireStep(target)
 
 									spinAngle = spinAngle + math.rad(180)
 									pcall(function()
@@ -1445,7 +2057,13 @@ local function buildUI()
 			if autoClickActive then
 				spawnLoop(function()
 					while autoClickActive do
-						fireToolOnce(getTargetPlayers())
+						local fireTargets
+						if currentTeleportTarget and os.clock() - lastTeleportTargetTime < 0.5 then
+							fireTargets = { currentTeleportTarget } -- hit whoever Teleport All / Loop / Under is on
+						else
+							fireTargets = getTargetPlayers()
+						end
+						fireToolOnce(fireTargets)
 						task.wait(autoClickDelay)
 					end
 				end)
@@ -1457,7 +2075,7 @@ local function buildUI()
 
 	AutoClickTab:Toggle({
 		Title = "Fire on Teleport Once",
-		Desc = "ON = tool fires while Teleport Once is on the target, stops when teleported back | OFF = no firing",
+		Desc = "ON = tool fires at the target during Teleport Once / All / Loop / Under / Closer Player, stops when teleported back | OFF = no firing",
 		Value = fireOnTeleport,
 		Callback = function(state)
 			fireOnTeleport = state
@@ -1673,6 +2291,335 @@ local function buildUI()
 		end
 	})
 
+	--// Fly the Head Tab Elements
+	FlyHeadTab:Toggle({
+		Title = "Fly the Head",
+		Desc = "Your head stays locked onto the target's head; with Fling on Teleport ON it flings them instead",
+		Value = flyHeadActive,
+		Callback = function(state)
+			setFlyHead(state)
+		end
+	})
+
+	FlyHeadTab:Space()
+
+	FlyHeadTab:Button({
+		Title = "Teleport the Head",
+		Desc = "Teleports your head onto the target's (or closest player's) head once",
+		Justify = "Center",
+		Callback = function()
+			local root = getCharacterRoot(player.Character)
+			local targets = getTargetPlayers()
+			local target = targets[1]
+			local targetHead = target and target.Character and target.Character:FindFirstChild("Head")
+			if not root or not targetHead then
+				notify("Fly the Head", "No target found")
+				return
+			end
+			if flingOnTeleport then
+				pcall(function()
+					root.CanCollide = true
+					lastFlingStep = os.clock()
+					root.CFrame = targetHead.CFrame
+					root.AssemblyAngularVelocity = Vector3.new(0, 30000, 0)
+					root.AssemblyLinearVelocity = Vector3.new(15000, 15000, 15000)
+				end)
+			else
+				pcall(function()
+					root.CFrame = targetHead.CFrame
+					root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+				end)
+			end
+			notify("Fly the Head", "Teleported to " .. target.Name .. "'s head")
+		end
+	})
+
+	--// Team Tab Elements (teammates are never targeted / teleported to / flung)
+	TeamTab:Toggle({
+		Title = "Team Check",
+		Desc = "ON = never target players on your Roblox team",
+		Value = teamCheckEnabled,
+		Callback = function(state)
+			teamCheckEnabled = state
+		end
+	})
+
+	TeamTab:Space()
+
+	TeamTab:Input({
+		Title = "Teammates",
+		Desc = "Names of friends/teammates to never target (comma separated)",
+		Placeholder = "e.g. mika, lua",
+		Value = table.concat(teamNames, ", "),
+		Callback = function(text)
+			teamNames = {}
+			if text then
+				for name in string.gmatch(text, "[^,]+") do
+					local cleaned = name:match("^%s*(.-)%s*$")
+					if cleaned and cleaned ~= "" then
+						table.insert(teamNames, cleaned)
+					end
+				end
+			end
+			notify("Team", #teamNames .. " teammate(s) saved")
+		end
+	})
+
+	TeamTab:Space()
+
+	TeamTab:Button({
+		Title = "Add Closest Player",
+		Desc = "Adds the nearest player to your teammates list",
+		Justify = "Center",
+		Callback = function()
+			local myRoot = getCharacterRoot(player.Character)
+			local nearest, best = nil, math.huge
+			for _, other in ipairs(Players:GetPlayers()) do
+				local r = other ~= player and getCharacterRoot(other.Character)
+				if myRoot and r then
+					local d = (r.Position - myRoot.Position).Magnitude
+					if d < best then
+						best, nearest = d, other
+					end
+				end
+			end
+			if nearest then
+				table.insert(teamNames, nearest.Name)
+				notify("Team", "Added teammate: " .. nearest.Name)
+			else
+				notify("Team", "No player nearby")
+			end
+		end
+	})
+
+	TeamTab:Space()
+
+	TeamTab:Button({
+		Title = "Clear Teammates",
+		Desc = "Empties the teammates list",
+		Justify = "Center",
+		Callback = function()
+			teamNames = {}
+			notify("Team", "Teammates cleared")
+		end
+	})
+
+	--// Anti Tab Elements
+	AntiTab:Toggle({
+		Title = "Anti Fling",
+		Desc = "Other players can't fling you: no collision with them + cancels crazy spin/velocity",
+		Value = antiFlingActive,
+		Callback = function(state)
+			setAntiFling(state)
+		end
+	})
+
+	AntiTab:Space()
+
+	AntiTab:Toggle({
+		Title = "Anti AFK",
+		Desc = "Stops the idle kick so you are not disconnected for standing still",
+		Value = antiAfkEnabled,
+		Callback = function(state)
+			antiAfkEnabled = state
+		end
+	})
+
+	--// Configs Tab Elements (save / load by name)
+	local configName = ""
+	local selectedConfig = nil
+	local configDropdown = nil
+
+	local function configPath(name)
+		return CONFIG_FOLDER .. "/" .. name .. ".json"
+	end
+
+	local function refreshConfigList()
+		local list = listConfigs()
+		if #list == 0 then list = { "(no saved configs)" } end
+		pcall(function()
+			if configDropdown and configDropdown.Refresh then
+				configDropdown:Refresh(list)
+			end
+		end)
+		return list
+	end
+
+	ConfigTab:Input({
+		Title = "Config Name",
+		Desc = "Type a name for your settings (letters, numbers, spaces)",
+		Placeholder = "e.g. my setup",
+		Callback = function(text)
+			configName = cleanConfigName(text)
+		end
+	})
+
+	ConfigTab:Space()
+
+	ConfigTab:Button({
+		Title = "Save Config",
+		Desc = "Saves all your current settings under the name above",
+		Justify = "Center",
+		Callback = function()
+			if not filesAvailable() then
+				notify("Configs", "Your executor has no file support (writefile)")
+				return
+			end
+			if configName == "" then
+				notify("Configs", "Type a config name first")
+				return
+			end
+			ensureConfigFolder()
+			local ok, err = pcall(function()
+				writefile(configPath(configName), HttpService:JSONEncode(collectSettings()))
+			end)
+			if ok then
+				notify("Configs", "Saved: " .. configName)
+				refreshConfigList()
+			else
+				notify("Configs", "Save failed")
+				warn("[Configs] " .. tostring(err))
+			end
+		end
+	})
+
+	ConfigTab:Space()
+
+	local initialList = listConfigs()
+	if #initialList == 0 then initialList = { "(no saved configs)" } end
+
+	configDropdown = ConfigTab:Dropdown({
+		Title = "Saved Configs",
+		Desc = "Pick a saved config, then press Load Config",
+		Values = initialList,
+		Callback = function(option)
+			selectedConfig = option
+		end
+	})
+
+	ConfigTab:Space()
+
+	ConfigTab:Button({
+		Title = "Load Config",
+		Desc = "Loads the selected config and rebuilds the UI with those settings",
+		Justify = "Center",
+		Callback = function()
+			if not filesAvailable() then
+				notify("Configs", "Your executor has no file support (readfile)")
+				return
+			end
+			local name = selectedConfig
+			if not name or name == "(no saved configs)" then
+				name = configName ~= "" and configName or nil
+			end
+			if not name then
+				notify("Configs", "Select a config first")
+				return
+			end
+
+			local ok, data = pcall(function()
+				return HttpService:JSONDecode(readfile(configPath(name)))
+			end)
+			if not ok or type(data) ~= "table" then
+				notify("Configs", "Could not load: " .. tostring(name))
+				return
+			end
+
+			applySettings(data)
+			stopAllLoops()
+			notify("Configs", "Loaded: " .. name)
+
+			task.spawn(function()
+				task.wait(0.4)
+				local okBuild, errBuild = pcall(buildUI)
+				if not okBuild then
+					warn("[Configs] rebuild failed: " .. tostring(errBuild))
+				end
+			end)
+		end
+	})
+
+	ConfigTab:Space()
+
+	ConfigTab:Button({
+		Title = "Set Auto Load",
+		Desc = "The selected config loads by itself every time you run the script",
+		Justify = "Center",
+		Callback = function()
+			if not filesAvailable() then
+				notify("Configs", "Your executor has no file support")
+				return
+			end
+			local name = selectedConfig
+			if not name or name == "(no saved configs)" then
+				name = configName ~= "" and configName or nil
+			end
+			if not name then
+				notify("Configs", "Select a config first")
+				return
+			end
+			if setAutoLoad(name) then
+				notify("Configs", "Auto Load: " .. name)
+			else
+				notify("Configs", "Could not set Auto Load")
+			end
+		end
+	})
+
+	ConfigTab:Space()
+
+	ConfigTab:Button({
+		Title = "Clear Auto Load",
+		Desc = "Stops loading a config automatically",
+		Justify = "Center",
+		Callback = function()
+			if setAutoLoad(nil) then
+				notify("Configs", "Auto Load cleared")
+			end
+		end
+	})
+
+	ConfigTab:Space()
+
+	ConfigTab:Button({
+		Title = "Delete Config",
+		Desc = "Deletes the selected config",
+		Justify = "Center",
+		Callback = function()
+			local name = selectedConfig
+			if not name or name == "(no saved configs)" then
+				notify("Configs", "Select a config first")
+				return
+			end
+			local ok = pcall(function()
+				if typeof(delfile) == "function" then
+					delfile(configPath(name))
+				else
+					error("no delfile")
+				end
+			end)
+			if ok then
+				notify("Configs", "Deleted: " .. name)
+				selectedConfig = nil
+				refreshConfigList()
+			else
+				notify("Configs", "Delete failed (executor has no delfile)")
+			end
+		end
+	})
+
+	ConfigTab:Space()
+
+	ConfigTab:Button({
+		Title = "Refresh List",
+		Desc = "Reloads the saved configs list",
+		Justify = "Center",
+		Callback = function()
+			refreshConfigList()
+			notify("Configs", "List refreshed")
+		end
+	})
+
 	--// Fling Tab Elements
 	FlingTab:Toggle({
 		Title = "Fling on Teleport",
@@ -1695,6 +2642,50 @@ local function buildUI()
 	})
 
 	--// Player Tab Elements
+	PlayerTab:Toggle({
+		Title = "Fake Lag (Ghost Clone)",
+		Desc = "Your real body freezes in place (looks laggy to others) while you control a hidden clone",
+		Value = fakeLagActive,
+		Callback = function(state)
+			setFakeLag(state)
+		end
+	})
+
+	PlayerTab:Space()
+
+	PlayerTab:Toggle({
+		Title = "Fake Lag: Teleport Back",
+		Desc = "ON = when you turn Fake Lag off, you appear where the clone was | OFF = back to where you started",
+		Value = fakeLagTeleportOnClose,
+		Callback = function(state)
+			fakeLagTeleportOnClose = state
+		end
+	})
+
+	PlayerTab:Space()
+
+	PlayerTab:Toggle({
+		Title = "Fake Lag: Hide Real Body",
+		Desc = "Moves your frozen real body far away so it can't be seen while Fake Lag is on",
+		Value = fakeLagHideBody,
+		Callback = function(state)
+			fakeLagHideBody = state
+		end
+	})
+
+	PlayerTab:Space()
+
+	PlayerTab:Toggle({
+		Title = "Walk Fling",
+		Desc = "ON = anyone you walk/bump into gets flung automatically, no teleport needed",
+		Value = walkFlingActive,
+		Callback = function(state)
+			setWalkFling(state)
+		end
+	})
+
+	PlayerTab:Space()
+
 	PlayerTab:Toggle({
 		Title = "Noclip",
 		Desc = "Walk through walls all the time. (Teleports already noclip by themselves)",
@@ -2196,6 +3187,16 @@ if not closerLoopRunning then
 			task.wait(0.1)
 		end
 	end)
+end
+
+--// Auto Load: apply the chosen config before the UI is built
+do
+	local autoName = getAutoLoad()
+	if autoName then
+		pcall(function()
+			applySettings(HttpService:JSONDecode(readfile(CONFIG_FOLDER .. "/" .. autoName .. ".json")))
+		end)
+	end
 end
 
 buildUI()
